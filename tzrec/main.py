@@ -33,7 +33,6 @@ from torchrec.distributed.model_parallel import (
 # NOQA
 from torchrec.distributed.train_pipeline import TrainPipelineSparseDist
 from torchrec.fx import symbolic_trace
-from torchrec.inference.modules import quantize_embeddings
 from torchrec.inference.state_dict_transform import (
     state_dict_gather,
     state_dict_to_device,
@@ -44,6 +43,7 @@ from torchrec.optim.apply_optimizer_in_backward import (
 from torchrec.optim.keyed import CombinedOptimizer, KeyedOptimizerWrapper
 from torchrec.optim.optimizers import in_backward_optimizer_filter
 
+from tzrec.acc.quant import quantize_embeddings
 from tzrec.acc.utils import (
     export_acc_config,
     is_input_tile_emb,
@@ -94,7 +94,9 @@ def init_process_group() -> Tuple[torch.device, str]:
     else:
         device: torch.device = torch.device("cpu")
         backend = "gloo"
-    dist.init_process_group(backend=backend)
+    from datetime import timedelta
+
+    dist.init_process_group(backend=backend, timeout=timedelta(seconds=3600))
     return device, backend
 
 

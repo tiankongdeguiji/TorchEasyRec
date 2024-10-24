@@ -214,5 +214,6 @@ class ScriptWrapper(nn.Module):
             predictions (dict): a dict of predicted result.
         """
         batch = self._data_parser.to_batch(data)  # , long_lengths=True)
+        # batch = batch.pin_memory().to(device, non_blocking=True)
         batch = batch.to(device, non_blocking=True)
         return self.model.predict(batch)
