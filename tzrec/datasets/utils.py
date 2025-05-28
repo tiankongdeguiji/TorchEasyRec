@@ -392,6 +392,62 @@ def process_hstu_neg_sample(
     )
 
 
+# def calc_slice_position(
+#     row_count: int,
+#     worker_id: int,
+#     num_workers_per_rank: int,
+#     rank: int,
+#     world_size: int,
+#     batch_size: int,
+#     drop_redundant_bs_eq_one: bool,
+#     pre_total_remain: int = 0,
+# ) -> Tuple[int, int, int]:
+#     """Calc table read position according to the slice information.
+
+#     Args:
+#         row_count (int): table total row count.
+#         slice_id (int): worker id.
+#         slice_count (int): total worker number.
+#         batch_size (int): batch_size.
+#         drop_redundant_bs_eq_one (bool): drop last redundant batch with batch_size
+#             equal one to prevent train_eval hung.
+#         pre_total_remain (int): remaining total count in pre-table is
+#             insufficient to meet the batch_size requirement for each worker.
+
+#     Return:
+#         start (int): start row position in table.
+#         end (int): start row position in table.
+#         total_remain (int): remaining total count in curr-table is
+#             insufficient to meet the batch_size requirement for each worker.
+#     """
+#     rank_count = int((row_count + pre_total_remain) / world_size)
+#     rank_split_point = (row_count + pre_total_remain) % world_size
+#     if rank < rank_split_point:
+#         rank_start = rank * (rank_count + 1)
+#         rank_end = rank_start + (rank_count + 1)
+#     else:
+#         rank_start = rank_split_point * (rank_count + 1) + (rank - rank_split_point) * rank_count     # NOQA
+#         rank_end = rank_start + rank_count
+
+#     rank_batch_count = int((rank_end - rank_start) / batch_size)
+#     rank_batch_remain =  (rank_end - rank_start) % batch_size
+
+#     worker_batch_count = rank_batch_count / num_workers_per_rank
+#     worker_batch_split_point = rank_batch_count % num_workers_per_rank
+#     if worker_id < worker_batch_split_point:
+#         worker_start = worker_id * (worker_batch_count + 1) * batch_size
+#         worker_end = worker_start + (worker_batch_count + 1) * batch_size
+#     elif worker_id == worker_batch_split_point:
+#         worker_start = worker_batch_split_point * (worker_batch_count + 1) * batch_size      # NOQA
+#         worker_end = worker_start + worker_batch_count * batch_size + rank_batch_remain      # NOQA
+#     else:
+#         worker_start = (worker_batch_split_point * (worker_batch_count + 1) + (worker_id - worker_batch_split_point) * worker_batch_count) * batch_size + rank_batch_remain   # NOQA
+#         worker_end = worker_start + worker_batch_count * batch_size
+
+#     start = rank_start + worker_start
+#     end = rank_start + worker_end
+
+
 def calc_slice_position(
     row_count: int,
     slice_id: int,
