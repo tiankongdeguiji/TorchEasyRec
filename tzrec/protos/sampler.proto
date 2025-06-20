@@ -50,6 +50,26 @@ message NegativeSamplerV2 {
     optional string field_delimiter = 10;
 }
 
+message PreparedNegativeSampler {
+    // sample data path
+    // schema => id:int64 | weight:float | attrs:string
+    required string input_path = 1;
+    // number of negative sample
+    required uint32 num_sample = 2;
+    // field names of attrs in train data or eval data
+    repeated string attr_fields = 3;
+    // field name of item_id in train data or eval data
+    required string item_id_field = 4;
+    // attribute delimiter of attrs string
+    optional string attr_delimiter = 5 [default=":"];
+    // number of negative samples for evaluator
+    optional uint32 num_eval_sample = 6 [default=0];
+    // field delimiter of input data
+    optional string field_delimiter = 7;
+    // item id delimiter
+    optional string item_id_delim = 8 [default=";"];
+}
+
 // Weighted Random Sampling ItemID not in Batch and Sampling Hard Edge
 message HardNegativeSampler {
     // user data path

@@ -124,6 +124,7 @@ message DataConfig {
     oneof sampler {
         NegativeSampler negative_sampler = 101;
         NegativeSamplerV2 negative_sampler_v2 = 102;
+        PreparedNegativeSampler prepared_negative_sampler = 106;
         HardNegativeSampler hard_negative_sampler = 103;
         HardNegativeSamplerV2 hard_negative_sampler_v2 = 104;
         TDMSampler tdm_sampler = 105;

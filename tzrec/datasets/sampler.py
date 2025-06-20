@@ -500,6 +500,95 @@ class NegativeSamplerV2(BaseSampler):
         return self._num_sample
 
 
+class PreparedNegativeSampler(BaseSampler):
+    """Negative Sampler.
+
+    Weighted random sampling items not in batch.
+
+    Args:
+        config (NegativeSampler): negative sampler config.
+        fields (list): item input fields.
+        batch_size (int): mini-batch size.
+        is_training (bool): train or eval.
+        multival_sep (str): multi value separator.
+    """
+
+    def __init__(
+        self,
+        config: sampler_pb2.PreparedNegativeSampler,
+        fields: List[pa.Field],
+        batch_size: int,
+        is_training: bool = True,
+        multival_sep: str = chr(29),
+    ) -> None:
+        super(PreparedNegativeSampler, self).__init__(
+            config, fields, batch_size, is_training, multival_sep
+        )
+        self._g = gl.Graph().node(
+            config.input_path,
+            node_type="item",
+            decoder=gl.Decoder(
+                attr_types=self._attr_gl_types,
+                weighted=True,
+                attr_delimiter=config.attr_delimiter,
+            ),
+        )
+        self._item_id_field = config.item_id_field
+        self._sampler = None
+
+    def init(self, client_id: int = -1) -> None:
+        """Init sampler client and samplers."""
+        super().init(client_id)
+
+    def _parse_nodes(self, nodes: gl.Nodes) -> List[pa.Array]:
+        features = []
+        int_idx = 0
+        float_idx = 0
+        string_idx = 0
+        for attr_name, attr_type, attr_gl_type, attr_np_type in zip(
+            self._attr_names, self._attr_types, self._attr_gl_types, self._attr_np_types
+        ):
+            if attr_name in self._ignore_attr_names:
+                string_idx += 1
+                continue
+            if attr_gl_type == "int":
+                feature = nodes.int_attrs[:, int_idx]
+                int_idx += 1
+            elif attr_gl_type == "float":
+                feature = nodes.float_attrs[:, float_idx]
+                float_idx += 1
+            elif attr_gl_type == "string":
+                feature = nodes.string_attrs[:, string_idx].astype(np.string_)
+                feature = np.char.decode(feature, "utf-8")
+                string_idx += 1
+            else:
+                raise ValueError("Unknown attr type %s" % attr_gl_type)
+            feature = feature.astype(attr_np_type)
+            feature = _to_arrow_array(feature, attr_type)
+            features.append(feature)
+        return features
+
+    def get(self, input_data: Dict[str, pa.Array]) -> Dict[str, pa.Array]:
+        """Sampling method.
+
+        Args:
+            input_data (dict): input data with item_id.
+
+        Returns:
+            Negative sampled feature dict.
+        """
+        ids = _pa_ids_to_npy(input_data[self._item_id_field].values)
+        nodes = self._g.get_nodes("item", ids)
+        features = self._parse_nodes(nodes)
+        result_dict = dict(zip(self._valid_attr_names, features))
+        return result_dict
+
+    @property
+    def estimated_sample_num(self) -> int:
+        """Estimated number of sampled num examples."""
+        return self._num_sample * self._batch_size
+
+
 class HardNegativeSampler(BaseSampler):
     """HardNegativeSampler.
 

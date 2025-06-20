@@ -20,7 +20,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 
 from tzrec.constant import Mode
 from tzrec.datasets.data_parser import DataParser
-from tzrec.datasets.sampler import BaseSampler, TDMSampler
+from tzrec.datasets.sampler import BaseSampler, PreparedNegativeSampler, TDMSampler
 from tzrec.datasets.utils import (
     C_NEG_SAMPLE_MASK,
     C_SAMPLE_MASK,
@@ -334,6 +334,34 @@ class BaseDataset(IterableDataset, metaclass=_dataset_meta_cls):
                 input_data = _expand_tdm_sample(
                     input_data, pos_sampled, neg_sampled, self._data_config
                 )
+            elif isinstance(self._sampler, PreparedNegativeSampler):
+                sampled = self._sampler.get(input_data)
+
+                item_fea_names = sampled.keys()
+                label_fields = set(self._data_config.label_fields)
+                input_names = input_data.keys()
+                other_names = input_names - item_fea_names - label_fields
+                batch_size = len(input_data[list(other_names)[0]])
+                num_sampled = len(sampled[list(item_fea_names)[0]])
+
+                neg_repeat_index = np.repeat(
+                    np.arange(batch_size), num_sampled // batch_size
+                )
+                for input_name in other_names:
+                    input_data[input_name] = pa.concat_arrays(
+                        [
+                            input_data[input_name],
+                            input_data[input_name].take(neg_repeat_index),
+                        ]
+                    )
+                for item_fea_name in item_fea_names:
+                    input_data[item_fea_name] = pa.concat_arrays(
+                        [
+                            input_data[item_fea_name],
+                            sampled[item_fea_name],
+                        ]
+                    )
+
             elif self._enable_hstu:
                 seq_attr = self._sampler._item_id_field
 

@@ -39,3 +39,8 @@ message DLRM {
 message MaskNet {
     required MaskNetModule mask_net_module = 1;
 }
+
+message MixCEMaskNet {
+    required MaskNetModule mask_net = 1;
+    required uint32 sample_num = 2;
+}

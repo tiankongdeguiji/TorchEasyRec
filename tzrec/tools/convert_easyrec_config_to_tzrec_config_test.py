@@ -880,6 +880,7 @@ FEATURE_CONFIG = """feature_configs {
   id_feature {
     feature_name: "user_id"
     expression: "user:user_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 1000
   }
@@ -888,6 +889,7 @@ feature_configs {
   id_feature {
     feature_name: "item_id"
     expression: "item:item_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 24
     hash_bucket_size: 1500000
   }
@@ -896,6 +898,7 @@ feature_configs {
   id_feature {
     feature_name: "user_blue_level"
     expression: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 140
   }
@@ -904,6 +907,7 @@ feature_configs {
   id_feature {
     feature_name: "host_price_level"
     expression: "item:host_price_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 8
     hash_bucket_size: 180
   }
@@ -912,6 +916,7 @@ feature_configs {
   sequence_id_feature {
     feature_name: "user_video_sequence"
     expression: "user:user_video_sequence"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 24
     hash_bucket_size: 1500000
   }
@@ -921,6 +926,7 @@ feature_configs {
     feature_name: "item__kv_user_blue_level_exposure_cnt_7d"
     map: "item:item__kv_user_blue_level_exposure_cnt_7d"
     key: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     boundaries: 1e-08
     boundaries: 47.0
@@ -942,6 +948,7 @@ feature_configs {
     feature_name: "item__kv_user_blue_level_click_focus_cnt_7d"
     map: "item:item__kv_user_blue_level_click_focus_cnt_7d"
     key: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     boundaries: 1e-08
     boundaries: 1.0
@@ -962,6 +969,7 @@ feature_configs {
     feature_name: "combo_user_blue_level_x_host_price_level"
     expression: "user:user_blue_level"
     expression: "item:host_price_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 140
   }
@@ -971,6 +979,7 @@ feature_configs {
     feature_name: "item__kv_user_blue_level_click_video_div_exposure_cnt_30d"
     map: "item:item__kv_user_blue_level_click_video_div_exposure_cnt_30d"
     key: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 0
   }
 }
@@ -1006,6 +1015,7 @@ FEATURE_CONFIG_NO_FG = """feature_configs {
   id_feature {
     feature_name: "user_id"
     expression: "user:user_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 1000
   }
@@ -1014,6 +1024,7 @@ feature_configs {
   id_feature {
     feature_name: "item_id"
     expression: "user:item_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 24
     hash_bucket_size: 1500000
   }
@@ -1022,6 +1033,7 @@ feature_configs {
   id_feature {
     feature_name: "user_blue_level"
     expression: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 140
   }
@@ -1030,6 +1042,7 @@ feature_configs {
   id_feature {
     feature_name: "host_price_level"
     expression: "user:host_price_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 8
     hash_bucket_size: 180
   }
@@ -1040,6 +1053,7 @@ feature_configs {
     expression: "user:user_video_sequence"
     sequence_length: 1
     sequence_delim: ","
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 24
     hash_bucket_size: 1500000
   }
@@ -1048,6 +1062,7 @@ feature_configs {
   raw_feature {
     feature_name: "item__kv_user_blue_level_exposure_cnt_7d"
     expression: "user:item__kv_user_blue_level_exposure_cnt_7d"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     boundaries: 1e-08
     boundaries: 47.0
@@ -1069,6 +1084,7 @@ feature_configs {
     feature_name: "item__kv_user_blue_level_click_focus_cnt_7d"
     map: "user:item__kv_user_blue_level_click_focus_cnt_7d"
     key: "user:user_blue_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     boundaries: 1e-08
     boundaries: 1.0
@@ -1089,6 +1105,7 @@ feature_configs {
     feature_name: "combo_user_blue_level_x_host_price_level"
     expression: "user:user_blue_level"
     expression: "user:host_price_level"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     hash_bucket_size: 140
   }
@@ -1105,6 +1122,7 @@ feature_configs {
     expression: "user:click_100_seq__item_id"
     sequence_length: 1
     sequence_delim: ";"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 24
     hash_bucket_size: 1500000
   }
@@ -1115,6 +1133,7 @@ feature_configs {
     expression: "user:click_100_seq__ts"
     sequence_length: 1
     sequence_delim: ";"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
     boundaries: 1e-08
     boundaries: 3.0

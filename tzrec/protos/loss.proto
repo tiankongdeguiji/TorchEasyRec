@@ -7,6 +7,7 @@ message LossConfig {
         SoftmaxCrossEntropy softmax_cross_entropy = 2;
         L2Loss l2_loss = 3;
         JRCLoss jrc_loss = 4;
+        MixCrossEntropy mix_cross_entropy = 5;
     }
 }
 
@@ -14,6 +15,9 @@ message BinaryCrossEntropy {
 }
 
 message SoftmaxCrossEntropy {
+}
+
+message MixCrossEntropy {
 }
 
 message L2Loss {

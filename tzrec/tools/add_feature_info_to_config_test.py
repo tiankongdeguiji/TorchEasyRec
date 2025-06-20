@@ -109,6 +109,7 @@ DROPED_FEATURE_CONFIG = """feature_configs {
   id_feature {
     feature_name: "user_id"
     expression: "user:user_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
   }
 }
@@ -116,6 +117,7 @@ feature_configs {
   id_feature {
     feature_name: "item_id"
     expression: "item:item_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
   }
 }
@@ -123,6 +125,7 @@ feature_configs {
   id_feature {
     feature_name: "day_h"
     expression: "user:day_h"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
   }
 }
@@ -130,6 +133,7 @@ feature_configs {
   raw_feature {
     feature_name: "item_cnt"
     expression: "item:item_cnt"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 4
   }
 }
@@ -172,6 +176,7 @@ UPDATE_FEATURE_CONFIG = """feature_configs {
   id_feature {
     feature_name: "user_id"
     expression: "user:user_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 36
     hash_bucket_size: 8278840
   }
@@ -180,6 +185,7 @@ feature_configs {
   id_feature {
     feature_name: "item_id"
     expression: "item:item_id"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 28
     hash_bucket_size: 3848650
   }
@@ -188,6 +194,7 @@ feature_configs {
   id_feature {
     feature_name: "day_h"
     expression: "user:day_h"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 8
     hash_bucket_size: 240
   }
@@ -196,6 +203,7 @@ feature_configs {
   raw_feature {
     feature_name: "item_cnt"
     expression: "item:item_cnt"
+    init_fn: "nn.init.normal_,std=0.005"
     embedding_dim: 8
     boundaries: -1023.9
     boundaries: 4.01
