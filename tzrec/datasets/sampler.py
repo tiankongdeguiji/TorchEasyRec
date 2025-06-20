@@ -540,7 +540,9 @@ class PreparedNegativeSampler(BaseSampler):
         """Init sampler client and samplers."""
         super().init(client_id)
 
-    def _parse_nodes(self, nodes: gl.Nodes) -> List[pa.Array]:
+    def _parse_nodes_with_inverse(
+        self, nodes: gl.Nodes, inverse_index: npt.NDArray
+    ) -> List[pa.Array]:
         features = []
         int_idx = 0
         float_idx = 0
@@ -564,7 +566,7 @@ class PreparedNegativeSampler(BaseSampler):
             else:
                 raise ValueError("Unknown attr type %s" % attr_gl_type)
             feature = feature.astype(attr_np_type)
-            feature = _to_arrow_array(feature, attr_type)
+            feature = _to_arrow_array(feature, attr_type).take(inverse_index)
             features.append(feature)
         return features
 
@@ -578,8 +580,9 @@ class PreparedNegativeSampler(BaseSampler):
             Negative sampled feature dict.
         """
         ids = _pa_ids_to_npy(input_data[self._item_id_field].values)
-        nodes = self._g.get_nodes("item", ids)
-        features = self._parse_nodes(nodes)
+        unique_ids, inverse_index = np.unique(ids, return_inverse=True)
+        nodes = self._g.get_nodes("item", unique_ids)
+        features = self._parse_nodes_with_inverse(nodes, inverse_index)
         result_dict = dict(zip(self._valid_attr_names, features))
         return result_dict
 
