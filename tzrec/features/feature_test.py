@@ -27,6 +27,7 @@ from tzrec.features import (
     match_feature,
     raw_feature,
     sequence_feature,
+    prompt_feature,
 )
 from tzrec.features import feature as feature_lib
 from tzrec.features.feature import FgMode

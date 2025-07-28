@@ -799,6 +799,56 @@ message SequenceFeature {
     repeated SeqFeatureConfig features = 5;
 }
 
+message PromptFeature {
+    // feature name, e.g. user_prompt
+    required string feature_name = 1;
+    // feature input, e.g. [user:user_id, user:item_id]
+    repeated string expression = 2;
+    // prompt type, e.g. user
+    required string prompt_type = 3;
+    // LLM tokenizer, e.g. Qwen3-0.6B
+    required string tokenizer = 4;
+
+
+    // embedding name, feature with same embedding name will share embedding
+    optional string embedding_name = 23;
+    // embedding dimension
+    optional uint32 embedding_dim = 24;
+    // number of hash size
+    optional uint64 hash_bucket_size = 25;
+    // id vocabulary list
+    repeated string vocab_list = 7;
+    // id vocabulary dict
+    map<string, uint64> vocab_dict = 8;
+    // id value dimensions, if value_dim = 0, it supports id with multi-value
+    optional uint32 value_dim = 9 [default = 0];
+    // embedding pooling type, available is {sum | mean}
+    optional string pooling = 10 [default = "sum"];
+    // fg default value
+    optional string default_value = 11 [default = ""];
+    // fg multi-value separator
+    optional string separator = 12 [default = "\x1d"];
+    // embedding init function, e.g. "nn.init.uniform_,a=-0.01,b=0.01"
+    optional string init_fn = 13;
+    // mask value in training progress
+    optional bool use_mask =  14;
+    // zero collision hash
+    optional ZeroCollisionHash zch = 15;
+    // id vocabulary file path
+    optional string vocab_file = 16;
+    // vocab file relative directory
+    optional string asset_dir = 17;
+
+    // default value when fg_mode = FG_NONE,
+    // when use pai-fg, you do not need to set the param.
+    // when use own fg and data contain null value, you can set the param for fill null
+    optional string fg_encoded_default_value = 30;
+    // out-of-vocab(OOV) id bucketize value when use vocab_list or vocab_dict
+    // when use default_bucketize_value, we will not add additional bucketize_value of
+    // `default_value`=0, bucketize_value of <OOV>=1 into vocab_list or vocab_dict
+    optional uint64 default_bucketize_value = 31;
+}
+
 message FeatureConfig {
     oneof feature {
         IdFeature id_feature = 1;
@@ -814,6 +864,7 @@ message FeatureConfig {
         SequenceRawFeature sequence_raw_feature = 11;
         CustomFeature custom_feature = 12;
         SequenceCustomFeature sequence_custom_feature = 13;
+        PromptFeature prompt_feature = 14;
     }
 }
 

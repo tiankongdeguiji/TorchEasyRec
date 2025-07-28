@@ -98,7 +98,7 @@ class ComboFeature(IdFeature):
             parsed_feat = SparseData(name=self.name, values=values, lengths=lengths)
         else:
             raise ValueError(
-                "fg_mode: {self.fg_mode} is not supported without fg handler."
+                f"fg_mode: {self.fg_mode} is not supported without fg handler."
             )
         return parsed_feat
 

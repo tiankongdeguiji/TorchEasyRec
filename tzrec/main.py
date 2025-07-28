@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 # NOQA
-from torchrec.distributed.train_pipeline import TrainPipelineSparseDist
+from torchrec.distributed.train_pipeline import TrainPipelineSparseDist, TrainPipelineBase
 from torchrec.inference.modules import quantize_embeddings
 from torchrec.optim.apply_optimizer_in_backward import (
     apply_optimizer_in_backward,  # NOQA
@@ -274,12 +274,15 @@ def _evaluate(
     is_rank_zero = int(os.environ.get("RANK", 0)) == 0
     is_local_rank_zero = int(os.environ.get("LOCAL_RANK", 0)) == 0
     model.eval()
-    pipeline = TrainPipelineSparseDist(
-        model,
-        # pyre-fixme [6]
-        None,
-        model.device,
-        execute_all_batches=True,
+    # pipeline = TrainPipelineSparseDist(
+    #     model,
+    #     # pyre-fixme [6]
+    #     None,
+    #     model.device,
+    #     execute_all_batches=True,
+    # )
+    pipeline = TrainPipelineBase(
+        model, None, model.device
     )
 
     use_step = eval_config.num_steps and eval_config.num_steps > 0
@@ -478,8 +481,11 @@ def _train_and_evaluate(
     i_epoch = 0
     losses = {}
     for i_epoch in epoch_iter:
-        pipeline = TrainPipelineSparseDist(
-            model, optimizer, model.device, execute_all_batches=True
+        # pipeline = TrainPipelineSparseDist(
+        # model, optimizer, model.device, execute_all_batches=True
+        # )
+        pipeline = TrainPipelineBase(
+            model, optimizer, model.device
         )
         if plogger is not None:
             plogger.set_description(f"Training Epoch {i_epoch}")
@@ -739,6 +745,14 @@ def train_and_evaluate(
         lambda params: dense_optim_cls(params, **dense_optim_kwargs),
     )
     optimizer = CombinedOptimizer([model.fused_optimizer, dense_optimizer])
+    # from torchrec.optim.clipping import GradientClippingOptimizer, GradientClipping
+    # optimizer = GradientClippingOptimizer(
+    #     optimizer=optimizer,
+    #     clipping=GradientClipping.NORM,
+    #     max_gradient=1.0,
+    #     norm_type=2.0,
+    #     enable_global_grad_clip=True,
+    # )
     sparse_lr = optimizer_builder.create_scheduler(
         model.fused_optimizer, pipeline_config.train_config.sparse_optimizer
     )
