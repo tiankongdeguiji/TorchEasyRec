@@ -23,6 +23,7 @@ import pyarrow as pa
 import torch
 from torch import distributed as dist
 from torch import nn, optim
+from torch.amp import GradScaler
 from torch.distributed._shard.sharded_tensor import ShardedTensor
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -70,6 +71,7 @@ from tzrec.modules.utils import BaseModule
 from tzrec.ops import Kernel
 from tzrec.optim import optimizer_builder
 from tzrec.optim.lr_scheduler import BaseLR
+from tzrec.optim.optimizer import TZRecOptimizer
 from tzrec.protos.data_pb2 import DataConfig, DatasetType
 from tzrec.protos.eval_pb2 import EvalConfig
 from tzrec.protos.feature_pb2 import FeatureConfig
@@ -80,7 +82,7 @@ from tzrec.protos.train_pb2 import TrainConfig
 from tzrec.utils import checkpoint_util, config_util
 from tzrec.utils.dist_util import (
     DistributedModelParallel,
-    TrainPipelineBase,
+    create_train_pipeline,
 )
 from tzrec.utils.fx_util import symbolic_trace
 from tzrec.utils.logging_util import ProgressLogger, logger
@@ -274,14 +276,7 @@ def _evaluate(
     is_rank_zero = int(os.environ.get("RANK", 0)) == 0
     is_local_rank_zero = int(os.environ.get("LOCAL_RANK", 0)) == 0
     model.eval()
-    # pipeline = TrainPipelineSparseDist(
-    #     model,
-    #     # pyre-fixme [6]
-    #     None,
-    #     model.device,
-    #     execute_all_batches=True,
-    # )
-    pipeline = TrainPipelineBase(model, None, model.device)
+    pipeline = create_train_pipeline(model)
 
     use_step = eval_config.num_steps and eval_config.num_steps > 0
     iterator = iter(eval_dataloader)
@@ -479,10 +474,7 @@ def _train_and_evaluate(
     i_epoch = 0
     losses = {}
     for i_epoch in epoch_iter:
-        # pipeline = TrainPipelineSparseDist(
-        # model, optimizer, model.device, execute_all_batches=True
-        # )
-        pipeline = TrainPipelineBase(model, optimizer, model.device)
+        pipeline = create_train_pipeline(model, optimizer)
         if plogger is not None:
             plogger.set_description(f"Training Epoch {i_epoch}")
 
@@ -743,7 +735,17 @@ def train_and_evaluate(
         dict(in_backward_optimizer_filter(model.named_parameters())),
         lambda params: dense_optim_cls(params, **dense_optim_kwargs),
     )
-    optimizer = CombinedOptimizer([model.fused_optimizer, dense_optimizer])
+    grad_scaler = None
+    if train_config.HasField("grad_scaler"):
+        grad_scaler = GradScaler(
+            device=device,
+            **config_util.config_to_kwargs(train_config.grad_scaler),
+        )
+    optimizer = TZRecOptimizer(
+        CombinedOptimizer([model.fused_optimizer, dense_optimizer]),
+        grad_scaler=grad_scaler,
+        gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+    )
     sparse_lr = optimizer_builder.create_scheduler(
         model.fused_optimizer, train_config.sparse_optimizer
     )
