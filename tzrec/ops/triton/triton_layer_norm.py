@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple
 import torch
 import triton
 import triton.language as tl
+from torch.library import triton_op, wrap_triton
 from triton.runtime.autotuner import autotune as triton_autotune
 
 from tzrec.ops.utils import switch_to_contiguous_if_needed
@@ -303,6 +304,7 @@ def _layer_norm_bwd_dwdb(
     tl.store(FINAL_DB + cols, sum_db.to(FINAL_DB.dtype.element_ty), mask=cols < D)
 
 
+@triton_op("tzrec::triton_weighted_layer_norm_fwd", mutates_args=())
 def triton_weighted_layer_norm_fwd(
     x: torch.Tensor,
     weight: Optional[torch.Tensor],
@@ -340,7 +342,7 @@ def triton_weighted_layer_norm_fwd(
         return y, mean, rstd, BLOCK_D, num_warps
     if learnable:
         # pyre-ignore[28]
-        _weighted_layer_norm_fwd[(N,)](
+        wrap_triton(_weighted_layer_norm_fwd)[(N,)](
             x,
             y,
             weight,
@@ -359,7 +361,7 @@ def triton_weighted_layer_norm_fwd(
         )
     else:
         # pyre-ignore[28]
-        _layer_norm_fwd[(N,)](
+        wrap_triton(_layer_norm_fwd)[(N,)](
             x,
             y,
             mean,

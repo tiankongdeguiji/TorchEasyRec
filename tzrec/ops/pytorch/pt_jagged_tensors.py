@@ -62,13 +62,12 @@ def _concat_2D_jagged_jagged(
 def pytorch_concat_2D_jagged(
     values_left: torch.Tensor,
     values_right: torch.Tensor,
-    max_len_left: Optional[int],
-    max_len_right: Optional[int],
+    max_len_left: int,
+    max_len_right: int,
     offsets_left: Optional[torch.Tensor],
     offsets_right: Optional[torch.Tensor],
 ) -> torch.Tensor:
     if offsets_left is None:
-        assert max_len_left is not None
         B = values_left.shape[0] // max_len_left
         offsets_left_non_optional = max_len_left * torch.arange(
             B + 1, device=values_left.device
@@ -77,30 +76,13 @@ def pytorch_concat_2D_jagged(
         assert max_len_right is not None
         offsets_left_non_optional = offsets_left
     if offsets_right is None:
+        assert max_len_right is not None
         B = values_right.shape[0] // max_len_right
         offsets_right_non_optional = max_len_right * torch.arange(
             B + 1, device=values_left.device
         )
     else:
         offsets_right_non_optional = offsets_right
-    max_len_left = (
-        int(
-            (offsets_left_non_optional[1:] - offsets_left_non_optional[:-1])
-            .max()
-            .item()
-        )
-        if max_len_left is None
-        else max_len_left
-    )
-    max_len_right = (
-        int(
-            (offsets_right_non_optional[1:] - offsets_right_non_optional[:-1])
-            .max()
-            .item()
-        )
-        if max_len_right is None
-        else max_len_right
-    )
     return _concat_2D_jagged_jagged(
         values_left=values_left,
         values_right=values_right,

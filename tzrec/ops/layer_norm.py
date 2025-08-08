@@ -15,7 +15,6 @@
 
 
 import torch
-from torch.fx._symbolic_trace import is_fx_tracing
 from torch.utils._triton import has_triton
 
 from tzrec.ops import Kernel
@@ -47,22 +46,22 @@ def layer_norm(
     eps: float = 1e-5,
     kernel: Kernel = Kernel.PYTORCH,
 ) -> torch.Tensor:
-    if kernel == Kernel.TRITON:
-        if not is_fx_tracing():
-            torch._assert(not x.is_cpu, "x must not be cpu tensor")
-            torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
-            torch._assert(not bias.is_cpu, "bias must not be cpu tensor")
-        return triton_layer_norm(x, weight, bias, eps)
-    else:
-        return pytorch_layer_norm(
-            x,
-            [
-                x.shape[-1],
-            ],
-            weight,
-            bias,
-            eps,
-        )
+    # if kernel == Kernel.TRITON:
+    #     if not is_fx_tracing():
+    #         torch._assert(not x.is_cpu, "x must not be cpu tensor")
+    #         torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
+    #         torch._assert(not bias.is_cpu, "bias must not be cpu tensor")
+    #     return triton_layer_norm(x, weight, bias, eps)
+    # else:
+    return pytorch_layer_norm(
+        x,
+        [
+            x.shape[-1],
+        ],
+        weight,
+        bias,
+        eps,
+    )
 
 
 def rms_norm(
@@ -71,13 +70,13 @@ def rms_norm(
     eps: float = 1e-5,
     kernel: Kernel = Kernel.PYTORCH,
 ) -> torch.Tensor:
-    if kernel == Kernel.TRITON:
-        if not is_fx_tracing():
-            torch._assert(not x.is_cpu, "x must not be cpu tensor")
-            torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
-        return triton_rms_norm(x, weight, eps)
-    else:
-        return pytorch_rms_norm(x, weight, eps)
+    # if kernel == Kernel.TRITON:
+    #     if not is_fx_tracing():
+    #         torch._assert(not x.is_cpu, "x must not be cpu tensor")
+    #         torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
+    #     return triton_rms_norm(x, weight, eps)
+    # else:
+    return pytorch_rms_norm(x, weight, eps)
 
 
 def swish_layer_norm(
@@ -87,19 +86,19 @@ def swish_layer_norm(
     eps: float = 1e-5,
     kernel: Kernel = Kernel.PYTORCH,
 ) -> torch.Tensor:
-    if kernel == Kernel.TRITON:
-        if not is_fx_tracing():
-            torch._assert(not x.is_cpu, "x must not be cpu tensor")
-            torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
-            torch._assert(not bias.is_cpu, "bias must not be cpu tensor")
-        return triton_swish_layer_norm(x, [x.shape[-1]], weight, bias, eps)
-    else:
-        return pytorch_swish_layer_norm(
-            x,
-            [
-                x.shape[-1],
-            ],
-            weight,
-            bias,
-            eps,
-        )
+    # if kernel == Kernel.TRITON:
+    #     if not is_fx_tracing():
+    #         torch._assert(not x.is_cpu, "x must not be cpu tensor")
+    #         torch._assert(not weight.is_cpu, "weight must not be cpu tensor")
+    #         torch._assert(not bias.is_cpu, "bias must not be cpu tensor")
+    #     return triton_swish_layer_norm(x, [x.shape[-1]], weight, bias, eps)
+    # else:
+    return pytorch_swish_layer_norm(
+        x,
+        [
+            x.shape[-1],
+        ],
+        weight,
+        bias,
+        eps,
+    )

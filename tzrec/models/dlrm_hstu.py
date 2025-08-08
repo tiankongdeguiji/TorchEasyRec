@@ -57,9 +57,9 @@ def _fx_construct_payload(
     return results
 
 
-@torch.fx.wrap
-def _fx_mark_length_features(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor
+# @torch.fx.wrap
+# def _fx_mark_length_features(tensor: torch.Tensor) -> torch.Tensor:
+#     return tensor
 
 
 class DlrmHSTU(RankModel):
@@ -227,9 +227,12 @@ class DlrmHSTU(RankModel):
         sparse_features = batch.sparse_features[BASE_DATA_GROUP].to_dict()
         sequence_dense_features = batch.sequence_dense_features
 
-        num_candidates = _fx_mark_length_features(
-            sparse_features[self._model_config.candidates_id_feature_name].lengths()
-        )
+        # num_candidates = _fx_mark_length_features(
+        #     sparse_features[self._model_config.candidates_id_feature_name].lengths()
+        # )
+        num_candidates = sparse_features[
+            self._model_config.candidates_id_feature_name
+        ].lengths()
         max_num_candidates = fx_infer_max_len(num_candidates)
 
         uih_seq_lengths = sparse_features[
@@ -255,11 +258,17 @@ class DlrmHSTU(RankModel):
                 or candidate_feature_name
                 == self._model_config.candidates_watchtime_feature_name
             ):
-                total_candidates = torch.sum(num_candidates).item()
-                values_right = torch.zeros(
-                    (total_candidates, 1),  # pyre-ignore
+                # total_candidates = torch.sum(num_candidates).item()
+                # values_right = torch.zeros(
+                #     (total_candidates, 1),  # pyre-ignore
+                #     dtype=values_left.dtype,
+                #     device=values_left.device,
+                # )
+                values_right = torch.zeros_like(
+                    sparse_features[
+                        self._model_config.candidates_id_feature_name
+                    ].values(),
                     dtype=values_left.dtype,
-                    device=values_left.device,
                 )
             elif is_sparse:
                 values_right = (

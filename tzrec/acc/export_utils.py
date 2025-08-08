@@ -183,6 +183,12 @@ def _check_graph_module(self, gm: torch.fx.GraphModule) -> None:
 Verifier._check_graph_module = _check_graph_module
 
 
+def _my_compiler(gm: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
+    print("my_compiler() called with FX graph:")
+    gm.graph.print_tabular()
+    return gm.forward
+
+
 def export_pm(
     model: nn.Module, data: Dict[str, torch.Tensor], save_dir: str
 ) -> Tuple[torch.export.ExportedProgram, Dict[str, torch.Tensor]]:
@@ -200,8 +206,15 @@ def export_pm(
     gm = symbolic_trace(model)
     with open(os.path.join(save_dir, "gm.code"), "w") as f:
         f.write(gm.code)
+    # gm = model
 
-    gm = gm.cuda()
+    # gm = gm.cuda()
+    # # optimized_mod = torch.compile(gm, backend=_my_compiler)
+    # optimized_mod = torch.compile(gm) #, backend=my_compiler)
+    # optimized_mod(data)
+    # import sys
+    # sys.stdout.flush()
+    # exit(1)
 
     batch = Dim("batch")
     dynamic_shapes = {}
@@ -254,7 +267,7 @@ def export_pm(
 
     logger.info("dynamic shapes=%s" % dynamic_shapes)
     exported_pg = torch.export.export(
-        gm, args=(data,), dynamic_shapes=(dynamic_shapes,)
+        gm, args=(data,), dynamic_shapes=(dynamic_shapes,), strict=False
     )
 
     export_path = os.path.join(save_dir, "exported_pg.py")

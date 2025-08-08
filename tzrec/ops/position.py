@@ -120,31 +120,31 @@ def add_timestamp_positional_embeddings(
 ) -> torch.Tensor:
     assert time_bucket_fn in ["sqrt", "log"]
     seq_embeddings = seq_embeddings * alpha
-    if kernel == Kernel.TRITON:
-        return triton_add_timestamp_positional_embeddings(
-            seq_embeddings=seq_embeddings,
-            seq_offsets=seq_offsets,
-            pos_embeddings=position_embeddings_weight,
-            ts_embeddings=timestamp_embeddings_weight,
-            timestamps=timestamps,
-            max_seq_len=max_seq_len,
-            max_contextual_seq_len=max_contextual_seq_len,
-            seq_lengths=seq_lengths,
-            num_targets=num_targets,
-            interleave_targets=interleave_targets,
-            time_bucket_fn=time_bucket_fn,
-        )
-    else:
-        return pytorch_add_timestamp_positional_embeddings(
-            seq_embeddings=seq_embeddings,
-            seq_offsets=seq_offsets,
-            pos_embeddings=position_embeddings_weight,
-            ts_embeddings=timestamp_embeddings_weight,
-            timestamps=timestamps,
-            max_seq_len=max_seq_len,
-            max_contextual_seq_len=max_contextual_seq_len,
-            seq_lengths=seq_lengths,
-            num_targets=num_targets,
-            interleave_targets=interleave_targets,
-            time_bucket_fn=time_bucket_fn,
-        )
+    # if kernel == Kernel.TRITON:
+    #     return triton_add_timestamp_positional_embeddings(
+    #         seq_embeddings=seq_embeddings,
+    #         seq_offsets=seq_offsets,
+    #         pos_embeddings=position_embeddings_weight,
+    #         ts_embeddings=timestamp_embeddings_weight,
+    #         timestamps=timestamps,
+    #         max_seq_len=max_seq_len,
+    #         max_contextual_seq_len=max_contextual_seq_len,
+    #         seq_lengths=seq_lengths,
+    #         num_targets=num_targets,
+    #         interleave_targets=interleave_targets,
+    #         time_bucket_fn=time_bucket_fn,
+    #     )
+    # else:
+    return pytorch_add_timestamp_positional_embeddings(
+        seq_embeddings=seq_embeddings,
+        seq_offsets=seq_offsets,
+        pos_embeddings=position_embeddings_weight,
+        ts_embeddings=timestamp_embeddings_weight,
+        timestamps=timestamps,
+        max_seq_len=max_seq_len,
+        max_contextual_seq_len=max_contextual_seq_len,
+        seq_lengths=seq_lengths,
+        num_targets=num_targets,
+        interleave_targets=interleave_targets,
+        time_bucket_fn=time_bucket_fn,
+    )

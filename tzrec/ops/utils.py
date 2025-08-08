@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 from typing import List
 
 import torch
@@ -29,15 +28,15 @@ def switch_to_contiguous_if_needed(x: torch.Tensor) -> torch.Tensor:
 def prev_power_of_2(x: int) -> int:
     import triton
 
-    if torch.compiler.is_compiling():
-        # Re-write to make Dynamo happy
-        x_tensor = torch.scalar_tensor(x, dtype=torch.int64)  # type: ignore[arg-type]
-        x_tensor_orig = x_tensor.clone()
-        out = triton.next_power_of_2(x_tensor)  # type: ignore[arg-type]
-        return int(torch.where(torch.lt(x_tensor_orig, out), out // 2, out).item())  # type: ignore[return-value]
-    else:
-        out = triton.next_power_of_2(x)
-        return out // 2 if out > x else out
+    # if torch.compiler.is_compiling():
+    #     # Re-write to make Dynamo happy
+    #     x_tensor = torch.scalar_tensor(x, dtype=torch.int64)  # type: ignore[arg-type]
+    #     x_tensor_orig = x_tensor.clone()
+    #     out = triton.next_power_of_2(x_tensor)  # type: ignore[arg-type]
+    #     return int(torch.where(torch.lt(x_tensor_orig, out), out // 2, out).item())
+    # else:
+    out = triton.next_power_of_2(x)
+    return out // 2 if out > x else out
 
 
 STATIC_MAX_SEQ_LENS: List[int] = []
@@ -46,7 +45,7 @@ USE_RUNTIME_MAX_SEQ_LEN: bool = False
 
 def set_static_max_seq_lens(max_seq_lens: List[int]) -> None:
     global STATIC_MAX_SEQ_LENS
-    STATIC_MAX_SEQ_LENS = copy.deepcopy(max_seq_lens)
+    # STATIC_MAX_SEQ_LENS = copy.deepcopy(max_seq_lens)
     STATIC_MAX_SEQ_LENS.sort()
 
 
@@ -55,6 +54,7 @@ def set_use_runtime_max_seq_len(use_runtime_max_seq_len: bool) -> None:
     USE_RUNTIME_MAX_SEQ_LEN = use_runtime_max_seq_len
 
 
+@torch.fx.wrap
 def autotune_max_seq_len(runtime_max_seq_len: int) -> int:
     global USE_RUNTIME_MAX_SEQ_LEN
 
