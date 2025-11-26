@@ -68,6 +68,8 @@ message ModelConfig {
         TDM tdm = 400;
 
         RocketLaunching rocket_launching = 500;
+
+        EmbeddingModel embedding_model = 1000;
     }
 
     optional uint32 num_class = 2 [default = 1];
