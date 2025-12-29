@@ -190,6 +190,9 @@ class BaseDataset(IterableDataset, metaclass=_dataset_meta_cls):
             sample_weights=list(data_config.sample_weight_fields)
             if self._mode != Mode.PREDICT
             else None,
+            sample_cost=data_config.sample_cost_field
+            if self._mode != Mode.PREDICT
+            else None,
             mode=self._mode,
             fg_threads=data_config.fg_threads,
             force_base_data_group=data_config.force_base_data_group,
@@ -482,12 +485,13 @@ class BaseReader(metaclass=_reader_meta_cls):
     def _slice_buff_data(
         self, buff_data: pa.RecordBatch
     ) -> Tuple[pa.RecordBatch, Optional[pa.RecordBatch]]:
+        batch_cost_size = self._batch_cost_size * (random.random() + 0.5)
         if self._use_sample_cost:
             # calculate slice point by cost
             sample_cost = buff_data[self._sample_cost_field]
             cumsum_sample_cost = pc.cumulative_sum(sample_cost)
             slice_size = pc.sum(
-                pc.less_equal(cumsum_sample_cost, self._batch_cost_size)
+                pc.less_equal(cumsum_sample_cost, batch_cost_size)
             ).as_py()
         else:
             slice_size = self._batch_size

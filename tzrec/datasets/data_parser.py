@@ -60,6 +60,7 @@ class DataParser:
         features (list): a list of features.
         labels (list, optional): a list of label names.
         sample_weights (list, optional): a list of sample weights.
+        sample_cost (str):
         mode (Mode): train or eval or predict.
         fg_threads (int): fg thread number.
         force_base_data_group (bool): force padding data into same
@@ -72,6 +73,7 @@ class DataParser:
         features: List[BaseFeature],
         labels: Optional[List[str]] = None,
         sample_weights: Optional[List[str]] = None,
+        sample_cost: Optional[str] = None,
         mode: Mode = Mode.EVAL,
         fg_threads: int = 1,
         force_base_data_group: bool = False,
@@ -80,6 +82,7 @@ class DataParser:
         self._features = features
         self._labels = labels or []
         self._sample_weights = sample_weights or []
+        self._sample_cost = sample_cost
         self._mode = mode
         self._is_training = mode == Mode.TRAIN
         self._force_base_data_group = force_base_data_group
@@ -236,6 +239,12 @@ class DataParser:
             output_data[HARD_NEG_INDICES] = torch.tensor(
                 input_data[HARD_NEG_INDICES].tolist(), dtype=torch.int32
             )
+
+        if self._sample_cost and self._sample_cost in input_data.keys():
+            output_data[self._sample_cost] = _to_tensor(
+                input_data[self._sample_cost].cast(pa.int64()).to_numpy()
+            )
+
         return output_data
 
     def _parse_feature_normal(
@@ -431,6 +440,9 @@ class DataParser:
                 additional_infos[HARD_NEG_INDICES] = input_data[HARD_NEG_INDICES]
             except Exception:
                 logger.warning("No hard negative samples exist in the batch.")
+
+        if self._sample_cost and self._sample_cost in input_data.keys():
+            additional_infos[self._sample_cost] = input_data[self._sample_cost]
 
         batch = Batch(
             dense_features=dense_features,

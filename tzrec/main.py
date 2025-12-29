@@ -13,6 +13,7 @@ import copy
 import itertools
 import json
 import os
+import time
 from collections import OrderedDict
 from queue import Queue
 from threading import Thread
@@ -385,6 +386,8 @@ def _train_and_evaluate(
     i_step = 0
     i_epoch = 0
     losses = {}
+
+    f_sample = open(os.path.join(model_dir, f"sample_cost_{os.environ['RANK']}"), "w")
     for i_epoch in epoch_iter:
         pipeline = create_train_pipeline(
             model,
@@ -410,7 +413,26 @@ def _train_and_evaluate(
             if i_step <= skip_steps:
                 continue
             try:
+                t1 = time.time()
                 losses, predictions, batch = pipeline.progress(train_iterator)
+                t2 = time.time()
+                if "sample_cost" in batch.additional_infos:
+                    s = (
+                        ",".join(
+                            map(
+                                str,
+                                batch.additional_infos["sample_cost"]
+                                .detach()
+                                .cpu()
+                                .numpy(),
+                            )
+                        )
+                        + "\t"
+                        + str(t2 - t1)
+                        + "\n"
+                    )
+                    f_sample.write(s)
+
                 _model.update_train_metric(predictions, batch)
                 if i_step % train_config.log_step_count_steps == 0:
                     train_metrics = _model.compute_train_metric()
@@ -436,11 +458,11 @@ def _train_and_evaluate(
             if save_checkpoints_steps > 0 and i_step > 0:
                 if i_step % save_checkpoints_steps == 0:
                     last_ckpt_step = i_step
-                    checkpoint_util.save_model(
-                        os.path.join(model_dir, f"model.ckpt-{i_step}"),
-                        model,
-                        optimizer,
-                    )
+                    # checkpoint_util.save_model(
+                    #     os.path.join(model_dir, f"model.ckpt-{i_step}"),
+                    #     model,
+                    #     optimizer,
+                    # )
                     if eval_dataloader is not None:
                         _evaluate(
                             model,
@@ -459,11 +481,11 @@ def _train_and_evaluate(
         if save_checkpoints_epochs > 0 and i_step > 0:
             if (i_epoch + 1) % save_checkpoints_epochs == 0:
                 last_ckpt_step = i_step
-                checkpoint_util.save_model(
-                    os.path.join(model_dir, f"model.ckpt-{i_step}"),
-                    model,
-                    optimizer,
-                )
+                # checkpoint_util.save_model(
+                #     os.path.join(model_dir, f"model.ckpt-{i_step}"),
+                #     model,
+                #     optimizer,
+                # )
                 if eval_dataloader is not None:
                     _evaluate(
                         model,
@@ -484,6 +506,7 @@ def _train_and_evaluate(
             if lr.by_epoch:
                 lr.step()
 
+    f_sample.close()
     _log_train(
         i_step,
         losses,
@@ -498,11 +521,11 @@ def _train_and_evaluate(
     if train_config.is_profiling:
         prof.stop()
     if last_ckpt_step != i_step:
-        checkpoint_util.save_model(
-            os.path.join(model_dir, f"model.ckpt-{i_step}"),
-            model,
-            optimizer,
-        )
+        # checkpoint_util.save_model(
+        #     os.path.join(model_dir, f"model.ckpt-{i_step}"),
+        #     model,
+        #     optimizer,
+        # )
         if eval_dataloader is not None:
             _evaluate(
                 model,

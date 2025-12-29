@@ -162,6 +162,7 @@ def hstu_preprocess_and_attention(
             uvqk_weight.shape[1] == 2 * num_heads * (hidden_dim + attn_dim),
             "uvqk_weight.shape[1] must equal 2 * num_heads * (hidden_dim + attn_dim)",
         )
+
     if kernel == Kernel.TRITON and prefill is False:
         from tzrec.ops._triton.triton_hstu_preprocess_and_attention import (
             triton_hstu_preprocess_and_attention,
