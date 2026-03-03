@@ -25,7 +25,10 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: "/review REPO: ${{ github.repository }} PR_NUMBER: ${{ github.event.pull_request.number }}"
+          prompt: |
+            /review REPO: ${{ github.repository }} PR_NUMBER: ${{ github.event.pull_request.number }}
+            Provide detailed feedback using inline comments for specific issues.
+            Use top-level comments for general problem observations.
           claude_args: |
             --model ${{ secrets.ANTHROPIC_MODEL }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
