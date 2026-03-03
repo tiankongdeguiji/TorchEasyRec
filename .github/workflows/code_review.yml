@@ -27,6 +27,12 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             /review REPO: ${{ github.repository }} PR_NUMBER: ${{ github.event.pull_request.number }}
+
+            **CRITICAL RESTRICTIONS:**
+            1. **NO CODE EXECUTION:** Rely exclusively on reading file contents and static analysis. You cannot run `python`, `bash`, or any shell commands other than `gh` tools. Do not attempt to verify code by executing it.
+            2. **NO INLINE POSITIVE COMMENTS OR PRAISE:** inline comments should only point out problems and issues
+            3. **ONLY COMMENT ON CHANGED LINES:** When creating inline comments, you MUST only comment on lines that are part of the actual diff. Use `gh pr diff` to identify the exact lines that changed before creating comments.
+
             Provide detailed feedback using inline comments for specific issues.
             Use top-level comments for general problem observations.
           claude_args: |
