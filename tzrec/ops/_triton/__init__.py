@@ -8,3 +8,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Monkey-patch Triton autotuner to catch RuntimeError during benchmarking.
+# Triton's autotuner only catches OutOfResources/PTXASError, but certain
+# configs can trigger CUDA illegal memory access (RuntimeError) due to
+# codegen bugs (e.g., Triton 3.6.0 on Hopper with large BLOCK_N * BLOCK_D).
+# Without this patch, one bad config crashes the entire process.
+import warnings as _warnings
+
+import triton.runtime.autotuner as _triton_autotuner
+
+_orig_bench = _triton_autotuner.Autotuner._bench
+
+
+def _safe_bench(self, *args, config, **kwargs):
+    try:
+        return _orig_bench(self, *args, config=config, **kwargs)
+    except RuntimeError as e:
+        _warnings.warn(
+            f"Triton autotuning: config {config} caused RuntimeError: {e}. "
+            f"Skipping this config."
+        )
+        return [float("inf"), float("inf"), float("inf")]
+
+
+_triton_autotuner.Autotuner._bench = _safe_bench

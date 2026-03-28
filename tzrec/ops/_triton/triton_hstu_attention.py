@@ -1041,6 +1041,28 @@ def _bwd_pre_hook(nargs):
         nargs["LOCK"].zero_()
 
 
+def _bwd_early_config_prune(configs, named_args, **kwargs):
+    """Prune bwd configs where BLOCK_N causes illegal memory access.
+
+    On Hopper GPUs with Triton 3.6.0, large BLOCK_N combined with large
+    BLOCK_D triggers a codegen bug causing CUDA illegal memory access.
+    Confirmed: BLOCK_N=64 with DimQ=DimV=128 crashes on H20 (cc 9.0).
+    """
+    all_args = {**named_args, **kwargs}
+    dim_q = all_args["DimQ"]
+    dim_v = all_args["DimV"]
+    max_block_n = 128
+    if max(dim_q, dim_v) >= 128:
+        max_block_n = 32
+    elif max(dim_q, dim_v) >= 64:
+        max_block_n = 64
+    pruned = [c for c in configs if c.kwargs["BLOCK_N"] <= max_block_n]
+    if not pruned:
+        min_bn = min(c.kwargs["BLOCK_N"] for c in configs)
+        pruned = [c for c in configs if c.kwargs["BLOCK_N"] == min_bn]
+    return pruned
+
+
 def _get_bw_configs() -> List[triton.Config]:
     if torch.version.hip:
         configs = []
@@ -1250,6 +1272,9 @@ def _get_bw_configs() -> List[triton.Config]:
         "DimQ",
         "DimV",
     ],
+    prune_configs_by={
+        "early_config_prune": _bwd_early_config_prune,
+    },
 )
 @triton.jit
 def _hstu_attn_bwd(  # noqa C901
