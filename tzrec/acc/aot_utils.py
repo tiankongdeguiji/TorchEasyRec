@@ -58,6 +58,7 @@ def load_model_aot(
         # Unified single-model path
         model = torch._inductor.aoti_load_package(
             aoti_model_path,
+            run_single_threaded=True,
             device_index=device.index,
         )
         return UnifiedAOTIModelWrapper(model)

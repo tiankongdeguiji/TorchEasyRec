@@ -10,7 +10,6 @@
 # limitations under the License.
 
 # Copyright (c) Alibaba, Inc. and its affiliates.
-import threading
 from collections import OrderedDict
 from queue import Queue
 from typing import Any, Dict, Final, Iterable, List, Optional, Tuple
@@ -475,13 +474,21 @@ class UnifiedAOTIModelWrapper(nn.Module):
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
         self.model = model
-        # Serializes forward to prevent GIL + C++ mutex deadlock.
-        # AOTI extern ops go through redispatch_boxed which releases the
-        # GIL; a second thread can then hold the GIL while blocking on
-        # the AOTI model-pool mutex, deadlocking with the first thread.
         # object.__setattr__ bypasses nn.Module's strict registration.
-        object.__setattr__(self, "_lock", threading.Lock())
         object.__setattr__(self, "_key_order", None)
+        # Cache the pytree specs for the AOTI model so we can call
+        # loader.run (which keeps the GIL) instead of loader.boxed_run
+        # (which releases it).  Releasing the GIL leads to a deadlock
+        # when extern-op callbacks re-acquire the GIL via
+        # PythonKernelHolder while another forward thread contends on
+        # the AOTI runner-pool mutex.
+        call_spec = model.loader.get_call_spec()
+        # pyre-ignore [16]
+        object.__setattr__(
+            self,
+            "_out_spec",
+            torch.utils._pytree.treespec_loads(call_spec[1]),
+        )
 
     def forward(
         self,
@@ -503,5 +510,14 @@ class UnifiedAOTIModelWrapper(nn.Module):
         data = OrderedDict((k, data[k]) for k in self._key_order)
         # Force CUDA primary context creation on worker threads.
         torch.cuda.set_device(device)
-        with self._lock:
-            return self.model(data)
+        # Use loader.run instead of model.__call__ (which uses
+        # loader.boxed_run).  boxed_run releases the Python GIL via
+        # py::gil_scoped_release before entering the C++ AOTI runtime;
+        # when an extern-op callback (PythonKernelHolder) then tries to
+        # re-acquire the GIL, the interplay with the runner-pool mutex
+        # and other forward threads causes a deadlock.  loader.run keeps
+        # the GIL held, so the callback sees it already acquired and the
+        # deadlock is avoided.
+        flat_inputs = list(data.values())
+        flat_outputs = self.model.loader.run(flat_inputs)
+        return torch.utils._pytree.tree_unflatten(flat_outputs, self._out_spec)
