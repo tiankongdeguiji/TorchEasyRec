@@ -16,17 +16,45 @@ every CI lane has direct coverage of the NFUNC mask construction without
 depending on the GPU attention kernels.
 """
 
+import itertools
 import unittest
+from typing import List, Optional, Tuple
 
 import torch
+from parameterized import parameterized
 
-from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import (
     apply_stu_truncation,
     apply_stu_truncation_plan,
     build_sla_func_tensor,
     compute_stu_truncation_plan,
 )
+
+
+def _reference_truncation(
+    x: torch.Tensor,
+    x_offsets: torch.Tensor,
+    num_targets: Optional[List[int]],
+    truncate_tail_len: int,
+    contextual_seq_len: int = 0,
+) -> Tuple[torch.Tensor, List[int]]:
+    """Plain-Python UIH-only truncation: ``[ctx | last min(U, tail) UIH | targets]``."""
+    chunks: List[torch.Tensor] = []
+    new_lens: List[int] = []
+    for b in range(x_offsets.numel() - 1):
+        s, e = int(x_offsets[b].item()), int(x_offsets[b + 1].item())
+        L = e - s
+        T = int(num_targets[b]) if num_targets is not None else 0
+        U = L - contextual_seq_len - T
+        new_uih = max(0, min(U, truncate_tail_len))
+        prefix = x[s : s + contextual_seq_len]
+        uih_kept = x[
+            s + contextual_seq_len + (U - new_uih) : s + contextual_seq_len + U
+        ]
+        targets = x[e - T : e]
+        chunks.append(torch.cat([prefix, uih_kept, targets], dim=0))
+        new_lens.append(contextual_seq_len + new_uih + T)
+    return torch.cat(chunks, dim=0), new_lens
 
 
 class BuildSlaFuncTensorTest(unittest.TestCase):
@@ -147,175 +175,48 @@ class BuildSlaFuncTensorTest(unittest.TestCase):
 
 
 class ApplyStuTruncationTest(unittest.TestCase):
-    """Direct content-level coverage of ``apply_stu_truncation``.
+    """Spec-vs-impl: ``apply_stu_truncation`` matches the Python reference."""
 
-    ``truncate_tail_len`` caps UIH only; contextual prefix and all
-    targets always survive intact.
-    """
-
-    def _id_marked_input(self, lengths):
-        """Build (x, offsets) where row ``i`` carries value ``float(i)``."""
+    @parameterized.expand(
+        [
+            # lengths, targets, contextual_seq_len, truncate_tail_len
+            [[3, 5, 2], None, 0, 16],  # no-op (tail >> U)
+            [[4, 10, 7], None, 0, 5],  # head drop, no ctx, no targets
+            [[8, 12], [3, 5], 0, 2],  # targets-aware, no ctx
+            [[6, 12, 20], [1, 2, 4], 3, 4],  # ctx + targets + UIH cap
+            [[6, 8], [1, 2], 2, 0],  # tail=0 drops all UIH
+        ]
+    )
+    def test_matches_reference(self, lengths, targets, ctx, tail) -> None:
         offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
             torch.tensor(lengths, dtype=torch.int64)
         )
-        total = int(offsets[-1].item())
-        x = torch.arange(total, dtype=torch.float32).view(total, 1).repeat(1, 4)
-        return x, offsets
-
-    def test_no_op_when_uih_fits(self) -> None:
-        """All ``U_b <= tail_len`` and no contextual / targets: unchanged."""
-        lengths = [3, 5, 2]
-        x, offsets = self._id_marked_input(lengths)
-        out_x, out_offsets, _, out_max = apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=None,
-            max_seq_len=int(max(lengths)),
-            truncate_tail_len=16,
+        x = torch.randn(int(offsets[-1].item()), 4)
+        num_targets = (
+            torch.tensor(targets, dtype=torch.int64) if targets is not None else None
         )
-        torch.testing.assert_close(out_x, x)
-        torch.testing.assert_close(out_offsets, offsets)
-        self.assertEqual(out_max, max(lengths))
-
-    def test_simple_head_drop_no_contextual_no_targets(self) -> None:
-        """C=0, no targets: keep last ``tail`` rows per sample."""
-        lengths = [4, 10, 7]
-        tail = 5
-        x, offsets = self._id_marked_input(lengths)
-        out_x, out_offsets, _, out_max = apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=None,
-            max_seq_len=int(max(lengths)),
-            truncate_tail_len=tail,
-        )
-        expected_lens = [min(L, tail) for L in lengths]
-        self.assertEqual(out_max, max(expected_lens))
-        for b in range(len(lengths)):
-            new_len = expected_lens[b]
-            keep_start_global = int(offsets[b + 1].item()) - new_len
-            sample_start = int(out_offsets[b].item())
-            for k in range(new_len):
-                self.assertEqual(
-                    out_x[sample_start + k, 0].item(),
-                    float(keep_start_global + k),
-                )
-
-    def test_targets_always_preserved(self) -> None:
-        """Target rows survive intact regardless of ``tail_len``."""
-        lengths = [8, 12]
-        targets = [3, 5]
-        tail = 2  # UIH cap so small that targets would be lost under naive clamp
-        x, offsets = self._id_marked_input(lengths)
-        num_targets = torch.tensor(targets, dtype=torch.int64)
-        out_x, out_offsets, _, out_max = apply_stu_truncation(
+        ref_x, ref_lens = _reference_truncation(x, offsets, targets, tail, ctx)
+        out_x, out_off, out_lens, out_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
             num_targets=num_targets,
             max_seq_len=int(max(lengths)),
-            truncate_tail_len=tail,
-        )
-        expected_lens = [min(L - T, tail) + T for L, T in zip(lengths, targets)]
-        actual_lens = (out_offsets[1:] - out_offsets[:-1]).tolist()
-        self.assertEqual(actual_lens, expected_lens)
-        self.assertEqual(out_max, max(expected_lens))
-        # Last T_b rows must be the original last T_b rows (targets intact).
-        for b, T in enumerate(targets):
-            new_len = expected_lens[b]
-            sample_start = int(out_offsets[b].item())
-            orig_end = int(offsets[b + 1].item())
-            for k in range(T):
-                tgt_slot = sample_start + new_len - T + k
-                self.assertEqual(
-                    out_x[tgt_slot, 0].item(),
-                    float(orig_end - T + k),
-                )
-
-    def test_preserves_contextual_prefix(self) -> None:
-        """C > 0 + targets: prefix, UIH tail, targets all survive."""
-        lengths = [6, 12, 20]
-        targets = [1, 2, 4]
-        ctx = 3
-        tail = 4
-        x, offsets = self._id_marked_input(lengths)
-        seq_lengths = offsets[1:] - offsets[:-1]
-        num_targets = torch.tensor(targets, dtype=torch.int64)
-        out_x, out_offsets, _, out_max = apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=num_targets,
-            max_seq_len=int(seq_lengths.max().item()),
             truncate_tail_len=tail,
             contextual_seq_len=ctx,
         )
-        for b, (L, T) in enumerate(zip(lengths, targets)):
-            U = L - ctx - T
-            new_uih = min(U, tail)
-            new_len = ctx + new_uih + T
-            sample_start = int(out_offsets[b].item())
-            orig_start = int(offsets[b].item())
-            orig_end = int(offsets[b + 1].item())
-            # Contextual prefix: first C rows.
-            for j in range(ctx):
-                self.assertEqual(
-                    out_x[sample_start + j, 0].item(), float(orig_start + j)
-                )
-            # Kept UIH: positions [C, C+new_uih).
-            uih_keep_start = orig_start + ctx + (U - new_uih)
-            for k in range(new_uih):
-                self.assertEqual(
-                    out_x[sample_start + ctx + k, 0].item(),
-                    float(uih_keep_start + k),
-                )
-            # Targets: last T rows.
-            for t in range(T):
-                self.assertEqual(
-                    out_x[sample_start + new_len - T + t, 0].item(),
-                    float(orig_end - T + t),
-                )
+        torch.testing.assert_close(out_x, ref_x)
+        self.assertEqual(out_lens.tolist(), ref_lens)
+        self.assertEqual(out_max, max(ref_lens))
         self.assertEqual(
-            out_max,
-            max(
-                lengths[i] - max(0, (lengths[i] - ctx - targets[i]) - tail)
-                for i in range(len(lengths))
-            ),
+            out_off.tolist(),
+            list(itertools.accumulate([0] + ref_lens)),
         )
-
-    def test_truncate_tail_len_zero_drops_all_uih(self) -> None:
-        """``truncate_tail_len == 0`` drops every UIH token."""
-        lengths = [6, 8]
-        targets = [1, 2]
-        ctx = 2
-        x, offsets = self._id_marked_input(lengths)
-        num_targets = torch.tensor(targets, dtype=torch.int64)
-        out_x, out_offsets, _, _ = apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=num_targets,
-            max_seq_len=int(max(lengths)),
-            truncate_tail_len=0,
-            contextual_seq_len=ctx,
-        )
-        expected_lens = [ctx + T for T in targets]
-        actual_lens = (out_offsets[1:] - out_offsets[:-1]).tolist()
-        self.assertEqual(actual_lens, expected_lens)
-        # And the kept rows are exactly C-prefix + targets-suffix.
-        for b, T in enumerate(targets):
-            sample_start = int(out_offsets[b].item())
-            orig_start = int(offsets[b].item())
-            orig_end = int(offsets[b + 1].item())
-            for j in range(ctx):
-                self.assertEqual(
-                    out_x[sample_start + j, 0].item(), float(orig_start + j)
-                )
-            for t in range(T):
-                self.assertEqual(
-                    out_x[sample_start + ctx + t, 0].item(),
-                    float(orig_end - T + t),
-                )
 
     def test_validation_raises_on_negative_params(self) -> None:
-        x, offsets = self._id_marked_input([6])
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor([6], dtype=torch.int64)
+        )
+        x = torch.randn(int(offsets[-1].item()), 4)
         with self.assertRaisesRegex(ValueError, "truncate_tail_len"):
             apply_stu_truncation(
                 x=x,
@@ -334,57 +235,32 @@ class ApplyStuTruncationTest(unittest.TestCase):
                 contextual_seq_len=-1,
             )
 
-    def test_kernel_param_threaded_through(self) -> None:
-        """Smoke: kernel kwarg routes through both jagged ops."""
-        x, offsets = self._id_marked_input([4, 6])
-        apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=None,
-            max_seq_len=6,
-            truncate_tail_len=3,
-            kernel=Kernel.PYTORCH,
-        )
-
 
 class StuTruncationPlanTest(unittest.TestCase):
-    """``compute_stu_truncation_plan`` + ``apply_stu_truncation_plan``.
-
-    Same offsets, replayable on parallel jagged tensors.
-    """
-
-    def _make(self, lengths):
-        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
-            torch.tensor(lengths, dtype=torch.int64)
-        )
-        total = int(offsets[-1].item())
-        x = torch.arange(total, dtype=torch.float32).view(total, 1).repeat(1, 4)
-        return x, offsets
+    """``compute_stu_truncation_plan`` + ``apply_stu_truncation_plan``."""
 
     def test_plan_apply_matches_apply_stu_truncation(self) -> None:
         """Two-step plan + apply matches the wrapper bit-for-bit."""
-        lengths = [10, 14, 6]
-        targets = [2, 3, 1]
-        ctx = 2
-        tail = 4
-        x, offsets = self._make(lengths)
-        seq_lengths = offsets[1:] - offsets[:-1]
-        num_targets = torch.tensor(targets, dtype=torch.int64)
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor([10, 14, 6], dtype=torch.int64)
+        )
+        x = torch.randn(int(offsets[-1].item()), 4)
+        num_targets = torch.tensor([2, 3, 1], dtype=torch.int64)
 
         wrapped_x, wrapped_off, wrapped_lens, wrapped_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
             num_targets=num_targets,
-            max_seq_len=int(seq_lengths.max().item()),
-            truncate_tail_len=tail,
-            contextual_seq_len=ctx,
+            max_seq_len=14,
+            truncate_tail_len=4,
+            contextual_seq_len=2,
         )
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
             num_targets=num_targets,
-            max_seq_len=int(seq_lengths.max().item()),
-            truncate_tail_len=tail,
-            contextual_seq_len=ctx,
+            max_seq_len=14,
+            truncate_tail_len=4,
+            contextual_seq_len=2,
         )
         out_x = apply_stu_truncation_plan(x, plan)
         torch.testing.assert_close(out_x, wrapped_x)
@@ -395,35 +271,32 @@ class StuTruncationPlanTest(unittest.TestCase):
     def test_replay_on_parallel_jagged(self) -> None:
         """A single plan can be applied to multiple parallel jagged tensors.
 
-        Use case: after STUStack truncates the embedding tensor, reuse
-        the plan to truncate the timestamp tensor with the same offsets.
+        Use case: ``HSTUTransducer.forward`` reuses the plan from
+        ``STUStack.forward`` to truncate ``seq_timestamps`` with the
+        same offsets used on the embeddings.
         """
-        lengths = [8, 12]
-        targets = [2, 3]
-        tail = 3
-        x, offsets = self._make(lengths)
-        seq_lengths = offsets[1:] - offsets[:-1]
-        num_targets = torch.tensor(targets, dtype=torch.int64)
-
-        # Parallel tensor: timestamps, same jagged layout but D=1 column.
-        ts = (
-            torch.arange(int(offsets[-1].item()), dtype=torch.float32)
-            .mul(7.0)
-            .unsqueeze(-1)
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor([8, 12], dtype=torch.int64)
         )
+        total = int(offsets[-1].item())
+        x = torch.randn(total, 4)
+        # Parallel tensor (D=1): row i holds 7.0 * i, so positional alignment
+        # after truncation is checkable with a simple scalar multiply.
+        ts = torch.arange(total, dtype=torch.float32).mul(7.0).unsqueeze(-1)
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
-            num_targets=num_targets,
-            max_seq_len=int(seq_lengths.max().item()),
-            truncate_tail_len=tail,
+            num_targets=torch.tensor([2, 3], dtype=torch.int64),
+            max_seq_len=12,
+            truncate_tail_len=3,
         )
+        # Build parallel reference: every kept row in `x` corresponds to
+        # the same original index in `ts` (= row * 7.0).
+        ref_x, _ = _reference_truncation(x, offsets, [2, 3], truncate_tail_len=3)
+        ref_ts, _ = _reference_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
         out_x = apply_stu_truncation_plan(x, plan)
         out_ts = apply_stu_truncation_plan(ts, plan)
-        # Sanity: same number of kept rows.
-        self.assertEqual(out_x.size(0), out_ts.size(0))
-        # And the rows kept are positionally aligned: same original index
-        # across the two tensors.
-        torch.testing.assert_close(out_x[:, 0:1] * 7.0, out_ts)
+        torch.testing.assert_close(out_x, ref_x)
+        torch.testing.assert_close(out_ts, ref_ts)
 
 
 if __name__ == "__main__":

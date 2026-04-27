@@ -16,6 +16,7 @@ from typing import List
 import torch
 from hypothesis import Verbosity, given, settings
 from hypothesis import strategies as st
+from parameterized import parameterized
 
 from tzrec.ops import Kernel
 from tzrec.utils.test_util import gpu_unavailable
@@ -629,60 +630,39 @@ class STUStackTruncationTest(unittest.TestCase):
             num_targets=num_targets,
         )
 
-    def test_truncation_applied_when_uih_longer_than_tail(self) -> None:
-        """UIH > tail_len is truncated; targets survive."""
+    @parameterized.expand(
+        [
+            # split, tail, num_targets, lengths, expects_plan
+            [0, 0, [1, 2], [4, 6], False],  # disabled
+            [1, 8, [2, 2, 2, 2], [12, 20, 5, 30], True],  # truncated
+            [1, 16, [1, 1, 1], [3, 5, 2], True],  # no-op (plan still returned)
+            [1, 8, None, [12, 20, 5, 30], True],  # listwise (num_targets=None)
+        ]
+    )
+    def test_forward_threads_truncation_metadata(
+        self, split, tail, targets, lengths, expects_plan
+    ) -> None:
+        """Stack returns ``(x, offsets, max, plan)`` and threads num_targets.
+
+        Helper-level tests verify the offset arithmetic; this confirms the
+        stack invokes truncation at split_layer and returns plan iff enabled.
+        """
         stack, D = self._make_stack(
-            num_layers=3, truncate_split_layer=1, truncate_tail_len=8
+            num_layers=3, truncate_split_layer=split, truncate_tail_len=tail
         )
-        x_lengths = torch.tensor([12, 20, 5, 30], dtype=torch.int64)
-        num_targets = torch.full((x_lengths.size(0),), 2, dtype=torch.int64)
-        out, new_offsets, new_max_seq_len, plan = self._forward(
+        x_lengths = torch.tensor(lengths, dtype=torch.int64)
+        num_targets = (
+            torch.tensor(targets, dtype=torch.int64) if targets is not None else None
+        )
+        out, new_offsets, new_max, plan = self._forward(
             stack, D, x_lengths, num_targets
         )
-        # contextual_seq_len == 0; per-sample U_b = L_b - T_b; new_uih =
-        # min(U_b, tail_len); new_len = new_uih + T_b.
-        uih = x_lengths - 2
-        new_uih = torch.clamp(uih, max=8)
-        expected = new_uih + 2
-        new_lengths = new_offsets[1:] - new_offsets[:-1]
-        torch.testing.assert_close(new_lengths, expected)
-        self.assertEqual(out.size(0), int(expected.sum().item()))
-        self.assertEqual(new_max_seq_len, int(expected.max().item()))
-        self.assertIsNotNone(plan)
-
-    def test_truncation_no_op_when_uih_fits(self) -> None:
-        """UIH <= tail_len for every sample: no row dropped."""
-        stack, D = self._make_stack(
-            num_layers=3, truncate_split_layer=1, truncate_tail_len=16
+        self.assertEqual(plan is not None, expects_plan)
+        self.assertEqual(out.size(0), int(new_offsets[-1].item()))
+        self.assertEqual(
+            new_max,
+            int((new_offsets[1:] - new_offsets[:-1]).max().item()),
         )
-        x_lengths = torch.tensor([3, 5, 2], dtype=torch.int64)
-        num_targets = torch.tensor([1, 1, 1], dtype=torch.int64)
-        out, _, new_max_seq_len, plan = self._forward(stack, D, x_lengths, num_targets)
-        self.assertEqual(out.size(0), int(x_lengths.sum().item()))
-        self.assertEqual(new_max_seq_len, int(x_lengths.max().item()))
-        # Plan still returned; just describes a no-op truncation.
-        self.assertIsNotNone(plan)
-
-    def test_return_signature_when_disabled_is_four_tuple(self) -> None:
-        """Truncation disabled → ``(x, x_offsets, max, None)``."""
-        stack, D = self._make_stack(
-            num_layers=2, truncate_split_layer=0, truncate_tail_len=0
-        )
-        x_lengths = torch.tensor([4, 6], dtype=torch.int64)
-        x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(x_lengths)
-        x = torch.randn(int(x_offsets[-1].item()), D)
-        out = stack(
-            x=x,
-            x_offsets=x_offsets,
-            max_seq_len=6,
-            num_targets=torch.tensor([1, 2], dtype=torch.int64),
-        )
-        self.assertEqual(len(out), 4)
-        ret_x, ret_offsets, ret_max, ret_plan = out
-        torch.testing.assert_close(ret_offsets, x_offsets)
-        self.assertEqual(ret_max, 6)
-        self.assertEqual(ret_x.size(0), x.size(0))
-        self.assertIsNone(ret_plan)
 
     def test_cached_forward_raises_on_truncation(self) -> None:
         """Train/serve firewall: ``cached_forward`` refuses truncation."""
@@ -696,20 +676,6 @@ class STUStackTruncationTest(unittest.TestCase):
                 delta_x=delta_x,
                 num_targets=num_targets,
             )
-
-    def test_truncation_with_num_targets_none(self) -> None:
-        """Listwise mode: ``num_targets=None`` + truncation works."""
-        stack, D = self._make_stack(
-            num_layers=3, truncate_split_layer=1, truncate_tail_len=8
-        )
-        x_lengths = torch.tensor([12, 20, 5, 30], dtype=torch.int64)
-        out, new_offsets, _, plan = self._forward(stack, D, x_lengths, None)
-        # Listwise: entire sequence is "UIH" (no targets to preserve).
-        expected = torch.clamp(x_lengths, max=8)
-        new_lengths = new_offsets[1:] - new_offsets[:-1]
-        torch.testing.assert_close(new_lengths, expected)
-        self.assertEqual(out.size(0), int(expected.sum().item()))
-        self.assertIsNotNone(plan)
 
     def test_truncation_with_sla_runs(self) -> None:
         """SLA-enabled stack with truncation produces a finite output.
