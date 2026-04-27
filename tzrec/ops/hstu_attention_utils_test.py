@@ -389,8 +389,7 @@ class StuTruncationPlanTest(unittest.TestCase):
         out_x = apply_stu_truncation_plan(x, plan)
         torch.testing.assert_close(out_x, wrapped_x)
         torch.testing.assert_close(plan.new_x_offsets, wrapped_off)
-        plan_lens = plan.new_x_offsets[1:] - plan.new_x_offsets[:-1]
-        torch.testing.assert_close(plan_lens, wrapped_lens)
+        torch.testing.assert_close(plan.new_lengths, wrapped_lens)
         self.assertEqual(plan.new_max_seq_len, wrapped_max)
 
     def test_replay_on_parallel_jagged(self) -> None:

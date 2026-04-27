@@ -139,9 +139,8 @@ class STUTruncationPlan:
     redoing the offset arithmetic or paying a second D->H sync.
 
     Fields:
+        new_lengths: per-sample lengths after truncation, shape ``(B,)``.
         new_x_offsets: cumulative offsets after truncation, shape ``(B+1,)``.
-            Per-sample new lengths recoverable as ``new_x_offsets[1:] -
-            new_x_offsets[:-1]``.
         new_max_seq_len: tight post-truncation ``max(new_lengths)``.  This
             is the only D->H sync on the truncation path.
         pre_max_seq_len: input ``max_seq_len`` before truncation; needed
@@ -158,6 +157,7 @@ class STUTruncationPlan:
             shape ``(B+1,)``; only set when ``contextual_seq_len > 0``.
     """
 
+    new_lengths: torch.Tensor
     new_x_offsets: torch.Tensor
     new_max_seq_len: int
     pre_max_seq_len: int
@@ -237,6 +237,7 @@ def compute_stu_truncation_plan(
         offsets_rest = None
         new_x_offsets = offsets_tail
     return STUTruncationPlan(
+        new_lengths=new_lengths,
         new_x_offsets=new_x_offsets,
         new_max_seq_len=int(new_lengths.max().item()),
         pre_max_seq_len=max_seq_len,
@@ -351,5 +352,4 @@ def apply_stu_truncation(
         contextual_seq_len=contextual_seq_len,
     )
     x = apply_stu_truncation_plan(x, plan, kernel=kernel)
-    new_lengths = plan.new_x_offsets[1:] - plan.new_x_offsets[:-1]
-    return x, plan.new_x_offsets, new_lengths, plan.new_max_seq_len
+    return x, plan.new_x_offsets, plan.new_lengths, plan.new_max_seq_len

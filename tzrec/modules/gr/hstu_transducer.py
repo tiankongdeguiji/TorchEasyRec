@@ -301,8 +301,8 @@ class HSTUTransducer(BaseModule):
             seq_timestamps = apply_stu_truncation_plan(
                 seq_timestamps.unsqueeze(-1), plan, kernel=self.kernel()
             ).squeeze(-1)
+            seq_lengths = plan.new_lengths
             seq_offsets = post_stu_seq_offsets
-            seq_lengths = seq_offsets[1:] - seq_offsets[:-1]
             max_seq_len = post_stu_max_seq_len
             # Pre-truncation total_uih_len no longer matches the truncated
             # embeddings; passing None lets split_2D_jagged derive it.
