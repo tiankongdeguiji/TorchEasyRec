@@ -296,18 +296,16 @@ class HSTUTransducer(BaseModule):
         # When STUStack truncated mid-stack, replay the same split on the
         # parallel jagged seq_timestamps so the postprocessor's UIH /
         # candidate split lines up with the truncated embeddings.
-        # ``num_targets`` is preserved by truncation and stays valid as-is.
         post_truncation_total_uih_len: Optional[int] = total_uih_len
         if plan is not None:
             seq_timestamps = apply_stu_truncation_plan(
-                seq_timestamps.unsqueeze(-1), plan
+                seq_timestamps.unsqueeze(-1), plan, kernel=self.kernel()
             ).squeeze(-1)
-            seq_lengths = plan.new_lengths
             seq_offsets = post_stu_seq_offsets
+            seq_lengths = seq_offsets[1:] - seq_offsets[:-1]
             max_seq_len = post_stu_max_seq_len
             # Pre-truncation total_uih_len no longer matches the truncated
-            # embeddings; let split_2D_jagged derive the correct length
-            # from the post-truncation offsets.
+            # embeddings; passing None lets split_2D_jagged derive it.
             post_truncation_total_uih_len = None
 
         encoded_embeddings, encoded_candidate_embeddings = self._postprocess(

@@ -169,7 +169,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         out_x, out_offsets, _, out_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=offsets[1:] - offsets[:-1],
             num_targets=None,
             max_seq_len=int(max(lengths)),
             truncate_tail_len=16,
@@ -186,7 +185,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         out_x, out_offsets, _, out_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=offsets[1:] - offsets[:-1],
             num_targets=None,
             max_seq_len=int(max(lengths)),
             truncate_tail_len=tail,
@@ -213,7 +211,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         out_x, out_offsets, _, out_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=offsets[1:] - offsets[:-1],
             num_targets=num_targets,
             max_seq_len=int(max(lengths)),
             truncate_tail_len=tail,
@@ -246,7 +243,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         out_x, out_offsets, _, out_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=seq_lengths,
             num_targets=num_targets,
             max_seq_len=int(seq_lengths.max().item()),
             truncate_tail_len=tail,
@@ -295,7 +291,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         out_x, out_offsets, _, _ = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=offsets[1:] - offsets[:-1],
             num_targets=num_targets,
             max_seq_len=int(max(lengths)),
             truncate_tail_len=0,
@@ -321,12 +316,10 @@ class ApplyStuTruncationTest(unittest.TestCase):
 
     def test_validation_raises_on_negative_params(self) -> None:
         x, offsets = self._id_marked_input([6])
-        seq_lengths = offsets[1:] - offsets[:-1]
         with self.assertRaisesRegex(ValueError, "truncate_tail_len"):
             apply_stu_truncation(
                 x=x,
                 x_offsets=offsets,
-                seq_lengths=seq_lengths,
                 num_targets=None,
                 max_seq_len=6,
                 truncate_tail_len=-1,
@@ -335,7 +328,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
             apply_stu_truncation(
                 x=x,
                 x_offsets=offsets,
-                seq_lengths=seq_lengths,
                 num_targets=None,
                 max_seq_len=6,
                 truncate_tail_len=4,
@@ -348,7 +340,6 @@ class ApplyStuTruncationTest(unittest.TestCase):
         apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=offsets[1:] - offsets[:-1],
             num_targets=None,
             max_seq_len=6,
             truncate_tail_len=3,
@@ -383,7 +374,6 @@ class StuTruncationPlanTest(unittest.TestCase):
         wrapped_x, wrapped_off, wrapped_lens, wrapped_max = apply_stu_truncation(
             x=x,
             x_offsets=offsets,
-            seq_lengths=seq_lengths,
             num_targets=num_targets,
             max_seq_len=int(seq_lengths.max().item()),
             truncate_tail_len=tail,
@@ -391,7 +381,6 @@ class StuTruncationPlanTest(unittest.TestCase):
         )
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
-            seq_lengths=seq_lengths,
             num_targets=num_targets,
             max_seq_len=int(seq_lengths.max().item()),
             truncate_tail_len=tail,
@@ -400,7 +389,8 @@ class StuTruncationPlanTest(unittest.TestCase):
         out_x = apply_stu_truncation_plan(x, plan)
         torch.testing.assert_close(out_x, wrapped_x)
         torch.testing.assert_close(plan.new_x_offsets, wrapped_off)
-        torch.testing.assert_close(plan.new_lengths, wrapped_lens)
+        plan_lens = plan.new_x_offsets[1:] - plan.new_x_offsets[:-1]
+        torch.testing.assert_close(plan_lens, wrapped_lens)
         self.assertEqual(plan.new_max_seq_len, wrapped_max)
 
     def test_replay_on_parallel_jagged(self) -> None:
@@ -424,7 +414,6 @@ class StuTruncationPlanTest(unittest.TestCase):
         )
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
-            seq_lengths=seq_lengths,
             num_targets=num_targets,
             max_seq_len=int(seq_lengths.max().item()),
             truncate_tail_len=tail,

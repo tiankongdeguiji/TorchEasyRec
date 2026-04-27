@@ -627,8 +627,6 @@ class STUStack(BaseModule):
     ) -> None:
         super().__init__(is_inference=is_inference)
         self._stu_layers: torch.nn.ModuleList = torch.nn.ModuleList(modules=stu_list)
-        # Symmetric validation: setting one of the two without the other
-        # used to silently no-op at forward time; surface it at __init__.
         if (truncate_split_layer > 0) != (truncate_tail_len > 0):
             raise ValueError(
                 f"truncate_split_layer and truncate_tail_len must both be "
@@ -647,13 +645,6 @@ class STUStack(BaseModule):
             )
         self._truncate_split_layer: int = truncate_split_layer
         self._truncate_tail_len: int = truncate_tail_len
-        # Capture contextual_seq_len from the first layer at __init__:
-        # all layers in a stack share the same value, and it's immutable
-        # post-construction.  Snapshotting here avoids reaching into the
-        # layer's private state during forward.
-        self._contextual_seq_len: int = (
-            stu_list[0]._contextual_seq_len if stu_list else 0
-        )
 
     def forward(
         self,
@@ -689,23 +680,17 @@ class STUStack(BaseModule):
         prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None
         for i, layer in enumerate(self._stu_layers):
             if self._truncate_tail_len > 0 and i == self._truncate_split_layer:
-                seq_lengths = x_offsets[1:] - x_offsets[:-1]
                 plan = compute_stu_truncation_plan(
                     x_offsets=x_offsets,
-                    seq_lengths=seq_lengths,
                     num_targets=num_targets,
                     max_seq_len=max_seq_len,
                     truncate_tail_len=self._truncate_tail_len,
-                    contextual_seq_len=self._contextual_seq_len,
-                    kernel=self.kernel(),
+                    contextual_seq_len=self._stu_layers[0]._contextual_seq_len,
                 )
-                x = apply_stu_truncation_plan(x, plan)
+                x = apply_stu_truncation_plan(x, plan, kernel=self.kernel())
                 x_offsets = plan.new_x_offsets
                 max_seq_len = plan.new_max_seq_len
-                # Invalidate the SLA cache: offsets / total_q have
-                # changed, so the previous func tensor is stale.  The
-                # next layer's cache-miss path will rebuild against the
-                # truncated layout.
+                # SLA cache keyed on offsets / total_q; both changed.
                 prev_attn_func = None
                 prev_attn_func_sig = None
             x, prev_attn_func, prev_attn_func_sig = layer(
@@ -739,11 +724,9 @@ class STUStack(BaseModule):
             torch.Tensor: output sequence embedding tensor.
         """
         if self._truncate_tail_len > 0 and self._truncate_split_layer > 0:
-            # The cached / delta path operates per-layer on a rolling KV
-            # cache; mid-stack truncation would drop UIH prefix tokens that
-            # post-truncation layers still reference via the cache, causing
-            # train/serve skew.  Refuse the config rather than silently
-            # diverge -- proper support is a follow-up.
+            # Cached / delta path keeps a rolling KV cache; mid-stack
+            # truncation would drop UIH prefix tokens that post-truncation
+            # layers still reference via the cache (train/serve skew).
             raise NotImplementedError(
                 "STUStack attention truncation is not supported in "
                 "cached_forward (serving path). Either disable truncation "

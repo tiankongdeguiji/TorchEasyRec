@@ -139,35 +139,29 @@ class STUTruncationPlan:
     redoing the offset arithmetic or paying a second D->H sync.
 
     Fields:
-        new_lengths: per-sample lengths after truncation, shape ``(B,)``.
         new_x_offsets: cumulative offsets after truncation, shape ``(B+1,)``.
+            Per-sample new lengths recoverable as ``new_x_offsets[1:] -
+            new_x_offsets[:-1]``.
         new_max_seq_len: tight post-truncation ``max(new_lengths)``.  This
             is the only D->H sync on the truncation path.
         pre_max_seq_len: input ``max_seq_len`` before truncation; needed
             by ``split_2D_jagged`` calls in :func:`apply_stu_truncation_plan`.
         contextual_seq_len: number of leading contextual tokens preserved
             uniformly across the batch.
-        kernel: backend used for the underlying jagged ops.
-        offsets_head: cumulative drop counts, shape ``(B+1,)``.  When
-            ``contextual_seq_len == 0`` this is fed directly to
-            ``split_2D_jagged`` as ``offsets_left``; otherwise it indexes
-            into the contextual-stripped subsequence.
-        offsets_tail: post-truncation offsets into ``x`` (when no
-            contextual prefix) or into the contextual-stripped subsequence
-            (otherwise).  Equals ``new_x_offsets`` when
-            ``contextual_seq_len == 0``.
+        offsets_head: cumulative drop counts, shape ``(B+1,)``.
+        offsets_tail: post-truncation offsets into the
+            contextual-stripped subsequence, shape ``(B+1,)``.  Equals
+            ``new_x_offsets`` when ``contextual_seq_len == 0``.
         offsets_prefix: cumulative offsets of the contextual prefix,
             shape ``(B+1,)``; only set when ``contextual_seq_len > 0``.
         offsets_rest: cumulative offsets of the post-prefix subsequence,
             shape ``(B+1,)``; only set when ``contextual_seq_len > 0``.
     """
 
-    new_lengths: torch.Tensor
     new_x_offsets: torch.Tensor
     new_max_seq_len: int
     pre_max_seq_len: int
     contextual_seq_len: int
-    kernel: Kernel
     offsets_head: torch.Tensor
     offsets_tail: torch.Tensor
     offsets_prefix: Optional[torch.Tensor] = None
@@ -176,13 +170,11 @@ class STUTruncationPlan:
 
 def compute_stu_truncation_plan(
     x_offsets: torch.Tensor,
-    seq_lengths: torch.Tensor,
     num_targets: Optional[torch.Tensor],
     max_seq_len: int,
     *,
     truncate_tail_len: int,
     contextual_seq_len: int = 0,
-    kernel: Kernel = Kernel.PYTORCH,
 ) -> STUTruncationPlan:
     """Compute the offset / length math for a UIH-only truncation.
 
@@ -196,9 +188,8 @@ def compute_stu_truncation_plan(
     structural elements.
 
     Args:
-        x_offsets: cumulative offsets ``(B + 1,)`` (used for the prefix
-            split when ``contextual_seq_len > 0``).
-        seq_lengths: per-sample lengths ``(B,)``.
+        x_offsets: cumulative offsets ``(B + 1,)``; per-sample lengths
+            are derived as ``x_offsets[1:] - x_offsets[:-1]``.
         num_targets: per-sample target counts ``(B,)`` or ``None``
             (listwise mode -- the entire sample counts as UIH).
         max_seq_len: padded max length of the input batch.
@@ -207,8 +198,6 @@ def compute_stu_truncation_plan(
             survive).
         contextual_seq_len: number of leading contextual tokens preserved
             uniformly across the batch.
-        kernel: backend used by ``apply_stu_truncation_plan`` for the
-            split / concat operations.
 
     Returns:
         A :class:`STUTruncationPlan`.  Contains one D->H sync to compute
@@ -222,6 +211,7 @@ def compute_stu_truncation_plan(
         raise ValueError(
             f"contextual_seq_len must be non-negative; got {contextual_seq_len}"
         )
+    seq_lengths = x_offsets[1:] - x_offsets[:-1]
     if num_targets is not None:
         uih_lengths = seq_lengths - contextual_seq_len - num_targets
     else:
@@ -229,7 +219,11 @@ def compute_stu_truncation_plan(
     new_uih_lengths = torch.clamp(uih_lengths, max=truncate_tail_len)
     drop_count = uih_lengths - new_uih_lengths
     new_lengths = seq_lengths - drop_count
-
+    # ``rest_tail_lengths`` collapses to ``new_lengths`` when C == 0, so
+    # both branches share the same offsets math.
+    rest_tail_lengths = new_lengths - contextual_seq_len
+    offsets_head = torch.ops.fbgemm.asynchronous_complete_cumsum(drop_count)
+    offsets_tail = torch.ops.fbgemm.asynchronous_complete_cumsum(rest_tail_lengths)
     if contextual_seq_len > 0:
         B = seq_lengths.size(0)
         offsets_prefix = (
@@ -237,24 +231,16 @@ def compute_stu_truncation_plan(
             * contextual_seq_len
         )
         offsets_rest = x_offsets - offsets_prefix
-        rest_tail_lengths = new_lengths - contextual_seq_len
-        offsets_head = torch.ops.fbgemm.asynchronous_complete_cumsum(drop_count)
-        offsets_tail = torch.ops.fbgemm.asynchronous_complete_cumsum(rest_tail_lengths)
         new_x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(new_lengths)
     else:
         offsets_prefix = None
         offsets_rest = None
-        offsets_head = torch.ops.fbgemm.asynchronous_complete_cumsum(drop_count)
-        offsets_tail = torch.ops.fbgemm.asynchronous_complete_cumsum(new_lengths)
         new_x_offsets = offsets_tail
-    new_max_seq_len = int(new_lengths.max().item())
     return STUTruncationPlan(
-        new_lengths=new_lengths,
         new_x_offsets=new_x_offsets,
-        new_max_seq_len=new_max_seq_len,
+        new_max_seq_len=int(new_lengths.max().item()),
         pre_max_seq_len=max_seq_len,
         contextual_seq_len=contextual_seq_len,
-        kernel=kernel,
         offsets_head=offsets_head,
         offsets_tail=offsets_tail,
         offsets_prefix=offsets_prefix,
@@ -265,6 +251,7 @@ def compute_stu_truncation_plan(
 def apply_stu_truncation_plan(
     x: torch.Tensor,
     plan: STUTruncationPlan,
+    kernel: Kernel = Kernel.PYTORCH,
 ) -> torch.Tensor:
     """Apply a precomputed truncation plan to a jagged tensor.
 
@@ -274,6 +261,7 @@ def apply_stu_truncation_plan(
     Args:
         x: jagged values of shape ``(total, D)``.
         plan: precomputed truncation plan.
+        kernel: backend for the underlying jagged ops.
 
     Returns:
         Post-truncation jagged values of shape
@@ -290,14 +278,14 @@ def apply_stu_truncation_plan(
             max_seq_len=pre_max,
             offsets_left=offsets_prefix,
             offsets_right=offsets_rest,
-            kernel=plan.kernel,
+            kernel=kernel,
         )
         _, x_rest_kept = split_2D_jagged(
             values=x_rest,
             max_seq_len=pre_max - contextual_seq_len,
             offsets_left=plan.offsets_head,
             offsets_right=plan.offsets_tail,
-            kernel=plan.kernel,
+            kernel=kernel,
         )
         return concat_2D_jagged(
             values_left=x_prefix,
@@ -306,14 +294,14 @@ def apply_stu_truncation_plan(
             max_len_right=pre_max - contextual_seq_len,
             offsets_left=offsets_prefix,
             offsets_right=plan.offsets_tail,
-            kernel=plan.kernel,
+            kernel=kernel,
         )
     _, x_kept = split_2D_jagged(
         values=x,
         max_seq_len=pre_max,
         offsets_left=plan.offsets_head,
         offsets_right=plan.offsets_tail,
-        kernel=plan.kernel,
+        kernel=kernel,
     )
     return x_kept
 
@@ -321,7 +309,6 @@ def apply_stu_truncation_plan(
 def apply_stu_truncation(
     x: torch.Tensor,
     x_offsets: torch.Tensor,
-    seq_lengths: torch.Tensor,
     num_targets: Optional[torch.Tensor],
     max_seq_len: int,
     *,
@@ -333,17 +320,9 @@ def apply_stu_truncation(
 
     Sample layout is ``[contextual(C) | UIH(U_b) | targets(T_b)]`` with
     ``L_b = C + U_b + T_b``.  ``truncate_tail_len`` caps the UIH portion
-    only; the contextual prefix and all targets are preserved.
+    only; contextual prefix and all targets are preserved.
 
-    Per sample:
-      ``new_uih_b = min(U_b, truncate_tail_len)``
-      ``drop_b    = U_b - new_uih_b``
-      ``new_L_b   = C + new_uih_b + T_b  =  L_b - drop_b``
-
-    The kept layout is
-    ``[contextual | last new_uih_b tokens of UIH | targets]``.
-
-    This is a thin wrapper around :func:`compute_stu_truncation_plan` +
+    Thin wrapper around :func:`compute_stu_truncation_plan` +
     :func:`apply_stu_truncation_plan`; callers that need to apply the
     same truncation to multiple jagged tensors (e.g. ``x`` and a parallel
     timestamp tensor) should call those two directly to avoid recomputing
@@ -352,7 +331,6 @@ def apply_stu_truncation(
     Args:
         x: jagged values of shape ``(total, D)``.
         x_offsets: cumulative offsets ``(B + 1,)``.
-        seq_lengths: per-sample lengths ``(B,)``.
         num_targets: per-sample target counts ``(B,)`` or ``None``.
         max_seq_len: padded max length of the input batch.
         truncate_tail_len: maximum UIH tokens kept per sample.  Must be
@@ -367,12 +345,11 @@ def apply_stu_truncation(
     """
     plan = compute_stu_truncation_plan(
         x_offsets=x_offsets,
-        seq_lengths=seq_lengths,
         num_targets=num_targets,
         max_seq_len=max_seq_len,
         truncate_tail_len=truncate_tail_len,
         contextual_seq_len=contextual_seq_len,
-        kernel=kernel,
     )
-    x = apply_stu_truncation_plan(x, plan)
-    return x, plan.new_x_offsets, plan.new_lengths, plan.new_max_seq_len
+    x = apply_stu_truncation_plan(x, plan, kernel=kernel)
+    new_lengths = plan.new_x_offsets[1:] - plan.new_x_offsets[:-1]
+    return x, plan.new_x_offsets, new_lengths, plan.new_max_seq_len
