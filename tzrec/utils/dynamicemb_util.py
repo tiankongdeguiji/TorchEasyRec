@@ -14,15 +14,9 @@ import os
 from typing import List, Optional, Tuple, Type, cast
 
 import torch
-from torch import distributed as dist
 from torch import nn
-from torchrec.distributed.embedding_kernel import BaseEmbedding
-from torchrec.distributed.embedding_types import (
-    EmbeddingComputeKernel,
-    GroupedEmbeddingConfig,
-)
+from torchrec.distributed.embedding_types import EmbeddingComputeKernel
 from torchrec.distributed.planner import (
-    constants,
     enumerators,
     planners,
     shard_estimators,
@@ -41,7 +35,6 @@ from torchrec.distributed.types import (
     ModuleSharder,
     ParameterSharding,
     PipelineType,
-    ShardingEnv,
     ShardingPlan,
     ShardingType,
     ShardMetadata,
@@ -61,18 +54,10 @@ try:
         KVCounter,
         align_to_table_size,
     )
-    from dynamicemb.batched_dynamicemb_compute_kernel import (
-        BatchedDynamicEmbedding,
-        BatchedDynamicEmbeddingBag,
-    )
     from dynamicemb.dynamicemb_config import DynamicEmbKernel
     from dynamicemb.planner import (
         DynamicEmbParameterConstraints,
         DynamicEmbParameterSharding,
-    )
-    from dynamicemb.planner.rw_sharding import (
-        GroupedEmbeddingsLookup,
-        GroupedPooledEmbeddingsLookup,
     )
     from dynamicemb.shard import (
         DynamicEmbeddingBagCollectionSharder,
@@ -396,49 +381,15 @@ if has_dynamicemb:
     # pyre-ignore [9]
     planners.to_sharding_plan = _to_sharding_plan
 
-    def _kernel_bw_lookup(
-        compute_device: str,
-        compute_kernel: str,
-        hbm_mem_bw: float,
-        ddr_mem_bw: float,
-        hbm_to_ddr_mem_bw: float,
-        caching_ratio: Optional[float] = None,
-        prefetch_pipeline: bool = False,
-    ) -> Optional[float]:
-        """Calculates the device bandwidth.
-
-        Args:
-            compute_kernel (str): compute kernel.
-            compute_device (str): compute device.
-            hbm_mem_bw (float): the bandwidth of the device HBM.
-            ddr_mem_bw (float): the bandwidth of the system DDR memory.
-            hbm_to_ddr_mem_bw (float): the bandwidth between device HBM and system DDR.
-            caching_ratio (Optional[float]): caching ratio used to determine device
-                bandwidth if UVM caching is enabled.
-            prefetch_pipeline (bool): whether prefetch pipeline is enabled.
-
-        Returns:
-            Optional[float]: the device bandwidth.
-        """
-        if compute_kernel == EmbeddingComputeKernel.CUSTOMIZED_KERNEL.value:
-            # for dynamic embedding table
-            caching_ratio = caching_ratio if caching_ratio else 0.0
-            return (
-                caching_ratio * hbm_mem_bw + (1 - caching_ratio) * hbm_to_ddr_mem_bw
-            ) / 10
-        else:
-            return constants.kernel_bw_lookup(
-                compute_device=compute_device,
-                compute_kernel=compute_kernel,
-                hbm_mem_bw=hbm_mem_bw,
-                ddr_mem_bw=ddr_mem_bw,
-                hbm_to_ddr_mem_bw=hbm_to_ddr_mem_bw,
-                caching_ratio=caching_ratio,
-                prefetch_pipeline=prefetch_pipeline,
-            )
-
-    # pyre-ignore [9]
-    shard_estimators.kernel_bw_lookup = _kernel_bw_lookup
+    # NOTE: torchrec 1.5 had a module-level ``shard_estimators.kernel_bw_lookup``
+    # that the legacy EmbeddingPerfEstimator called directly; tzrec used to
+    # monkey-patch that binding to teach it about CUSTOMIZED_KERNEL. After the
+    # 1.6 estimator refactor (PR #3723), shard_estimators no longer imports
+    # kernel_bw_lookup at all — the live call moved into
+    # ``HardwarePerfConfig.get_device_bw`` on the new factory-built estimator.
+    # The CUSTOMIZED_KERNEL bandwidth override is now installed by
+    # ``tzrec.utils.plan_util.EmbeddingEnumerator`` directly on that config
+    # (caching_ratio-aware), which keeps the formula in one place.
 
     def _calculate_dynamicemb_storage_specific_sizes(
         tensor: torch.Tensor,
@@ -617,57 +568,16 @@ if has_dynamicemb:
             for hbm_size, ddr_size in zip(hbm_sizes, ddr_sizes)
         ]
 
-    # Monkey-patch for torchrec 1.5.0 compatibility
-    # The base class now passes 'env' parameter to _create_embedding_kernel
-    def _grouped_embeddings_lookup_create_embedding_kernel(
-        self,  # pyre-ignore [2]
-        config: GroupedEmbeddingConfig,
-        pg: Optional[dist.ProcessGroup],
-        device: Optional[torch.device],
-        env: Optional[ShardingEnv] = None,
-    ) -> BaseEmbedding:
-        """Patched version that accepts env parameter for torchrec 1.5.0."""
-        if config.compute_kernel is not EmbeddingComputeKernel.CUSTOMIZED_KERNEL:
-            # pyre-ignore [16]
-            return super(GroupedEmbeddingsLookup, self)._create_embedding_kernel(
-                config=config, pg=pg, device=device, env=env
-            )
-        else:
-            self._need_prefetch = True
-            return BatchedDynamicEmbedding(
-                config=config,
-                pg=pg,
-                device=device,
-            )
-
-    GroupedEmbeddingsLookup._create_embedding_kernel = (
-        _grouped_embeddings_lookup_create_embedding_kernel
-    )
-
-    def _grouped_pooled_embeddings_lookup_create_embedding_kernel(
-        self,  # pyre-ignore [2]
-        config: GroupedEmbeddingConfig,
-        device: Optional[torch.device],
-        pg: Optional[dist.ProcessGroup],
-        sharding_type: Optional[ShardingType],
-        env: Optional[ShardingEnv] = None,
-    ) -> BaseEmbedding:
-        """Patched version that accepts env parameter for torchrec 1.5.0."""
-        if config.compute_kernel is not EmbeddingComputeKernel.CUSTOMIZED_KERNEL:
-            # pyre-ignore [16]
-            return super(GroupedPooledEmbeddingsLookup, self)._create_embedding_kernel(
-                config, device, pg, sharding_type, env
-            )
-        else:
-            return BatchedDynamicEmbeddingBag(
-                config=config,
-                pg=pg,
-                device=device,
-            )
-
-    GroupedPooledEmbeddingsLookup._create_embedding_kernel = (
-        _grouped_pooled_embeddings_lookup_create_embedding_kernel
-    )
+    # NOTE: dynamicemb 0.1.0 already provides
+    # ``GroupedEmbeddingsLookup._create_embedding_kernel`` and
+    # ``GroupedPooledEmbeddingsLookup._create_embedding_kernel`` overrides
+    # (recsys-examples@c7b9ea2:corelib/dynamicemb/dynamicemb/planner/
+    # rw_sharding.py:55-186) that dispatch CUSTOMIZED_KERNEL to
+    # BatchedDynamicEmbedding{,Bag} and pass ``env`` to torchrec's super on
+    # 1.5+. tzrec used to re-bind the same methods for the dynamicemb 0.0.1
+    # era; on 0.1.0 those re-binds are redundant and would shadow upstream's
+    # version-aware fallback, so we now rely entirely on dynamicemb's own
+    # overrides.
 
     from torchrec.sparse import jagged_tensor_validator as _jtv
 

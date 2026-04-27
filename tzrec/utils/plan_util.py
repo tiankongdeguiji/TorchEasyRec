@@ -30,6 +30,7 @@ from torchrec.distributed.planner.constants import (
 )
 from torchrec.distributed.planner.enumerators import (
     GUARDED_COMPUTE_KERNELS,
+    GUARDED_SHARDING_TYPES_FOR_FP_MODULES,
     EmbeddingComputeKernel,
     EmbeddingTower,
     EmbeddingTowerCollection,
@@ -62,6 +63,7 @@ from torchrec.distributed.planner.types import (
     Storage,
     Topology,
 )
+from torchrec.distributed.planner.utils import build_sharder_data_map
 from torchrec.distributed.sharding_plan import (
     get_default_sharders as _get_default_sharders,
 )
@@ -74,6 +76,10 @@ from torchrec.distributed.types import (
     ShardingType,
 )
 from torchrec.modules.embedding_configs import DATA_TYPE_NUM_BITS, DataType
+from torchrec.modules.embedding_modules import (
+    EmbeddingBagCollection,
+    EmbeddingCollection,
+)
 
 from tzrec.protos import feature_pb2
 from tzrec.utils import env_util
@@ -536,7 +542,11 @@ class EmbeddingStorageEstimator(ShardEstimator):
             return
 
         for sharding_option in sharding_options:
-            sharder_key = sharder_name(type(sharding_option.module[1]))
+            # ``module_type_key`` is precomputed on ShardingOption in
+            # torchrec 1.6 (types.py:1175); preferred over the legacy
+            # ``sharder_name(type(sharding_option.module[1]))`` shape that
+            # post-rc1 PR #3917 removes.
+            sharder_key = sharding_option.module_type_key
             sharder = sharder_map[sharder_key]
 
             caching_ratio = sharding_option.cache_load_factor
@@ -782,23 +792,54 @@ class EmbeddingEnumerator(_EmbeddingEnumerator):
                 topology=topology, constraints=constraints
             )
             if has_dynamicemb:
-                # torchrec 1.6 raises ValueError when its hardware-aware perf
-                # estimator sees an unrecognized compute kernel. dynamicemb
-                # registers its own CUSTOMIZED_KERNEL which is not in torchrec's
-                # kernel_bw_lookup, so we inject a bandwidth override for it —
-                # approximated as fused_uvm_caching-like since dynamicemb is
-                # HBM+HKV caching.
-                inner_cfg = perf_estimator._estimator._config
-                customized_bw = (
-                    0.2 * topology.hbm_mem_bw + 0.8 * topology.hbm_to_ddr_mem_bw
-                ) / 10
-                inner_cfg.kernel_device_bandwidths = {
-                    **inner_cfg.kernel_device_bandwidths,
-                    (
-                        "cuda",
-                        EmbeddingComputeKernel.CUSTOMIZED_KERNEL.value,
-                    ): customized_bw,
-                }
+                # torchrec 1.6 raises ValueError from
+                # HardwarePerfConfig.get_device_bw when it sees a compute
+                # kernel that isn't in its internal kernel_bw_lookup table.
+                # dynamicemb's CUSTOMIZED_KERNEL is unknown to that lookup,
+                # so wrap the inner config's get_device_bw to compute its
+                # bandwidth from the per-shard caching_ratio (matching
+                # dynamicemb's original 1.5-era formula) and fall through to
+                # upstream for every other kernel. Using the method-level
+                # override instead of the static kernel_device_bandwidths
+                # dict preserves caching_ratio variation across the 10
+                # cache_load_factor copies emitted in `enumerate` — without
+                # it the perf model can't break ties on cache hit rate.
+                assert hasattr(perf_estimator, "_estimator") and hasattr(
+                    perf_estimator._estimator, "_config"
+                ), (
+                    "torchrec EmbeddingPerfEstimator no longer exposes "
+                    "_estimator/_config; tzrec dynamicemb integration "
+                    "needs a new hook."
+                )
+                _inner_cfg = perf_estimator._estimator._config
+                _orig_get_device_bw = _inner_cfg.get_device_bw
+
+                def _customized_kernel_aware_get_device_bw(
+                    compute_device: str,
+                    compute_kernel: str,
+                    hbm_mem_bw: float,
+                    ddr_mem_bw: float,
+                    ssd_mem_bw: float,
+                    hbm_to_ddr_mem_bw: float,
+                    caching_ratio: Optional[float] = None,
+                    prefetch_pipeline: bool = False,
+                ) -> Optional[float]:
+                    if compute_kernel == EmbeddingComputeKernel.CUSTOMIZED_KERNEL.value:
+                        cr = caching_ratio if caching_ratio is not None else 0.0
+                        return (cr * hbm_mem_bw + (1 - cr) * hbm_to_ddr_mem_bw) / 10
+                    return _orig_get_device_bw(
+                        compute_device,
+                        compute_kernel,
+                        hbm_mem_bw,
+                        ddr_mem_bw,
+                        ssd_mem_bw,
+                        hbm_to_ddr_mem_bw,
+                        caching_ratio,
+                        prefetch_pipeline,
+                    )
+
+                # pyre-ignore [8]
+                _inner_cfg.get_device_bw = _customized_kernel_aware_get_device_bw
             estimator: List[ShardEstimator] = [
                 perf_estimator,
                 EmbeddingStorageEstimator(topology=topology, constraints=constraints),
@@ -838,6 +879,13 @@ class EmbeddingEnumerator(_EmbeddingEnumerator):
         self._sharder_map = {
             sharder_name(sharder.module_type): sharder for sharder in sharders
         }
+        # Forward-compat for torchrec ≥1.6.0 stable: post-rc1 commits
+        # b0027133 / 25b9b5ff (first tagged in v2026.03.30.00) wire
+        # ``_sharder_data_map`` into the enumerator and migrate every
+        # estimator/stat through it. v1.6.0-rc1 ignores this attribute, so
+        # populating it now is a cheap no-op that prevents the next torchrec
+        # bump from re-breaking the override.
+        self._sharder_data_map = build_sharder_data_map(self._sharder_map)
         sharding_options: List[ShardingOption] = []
 
         named_modules_queue = [("", module)]
@@ -886,10 +934,14 @@ class EmbeddingEnumerator(_EmbeddingEnumerator):
                 if device_group and device_group != self._compute_device:
                     continue
 
+                num_buckets = self._get_num_buckets(name, child_module)
                 sharding_options_per_table: List[ShardingOption] = []
 
                 for sharding_type in self._filter_sharding_types(
-                    name, sharder.sharding_types(self._compute_device), child_path
+                    name,
+                    sharder.sharding_types(self._compute_device),
+                    child_path,
+                    sharder_key=sharder_key,
                 ):
                     for compute_kernel in self._filter_compute_kernels(
                         name,
@@ -907,6 +959,7 @@ class EmbeddingEnumerator(_EmbeddingEnumerator):
                             sharding_type=sharding_type,
                             col_wise_shard_dim=col_wise_shard_dim,
                             device_memory_sizes=self._device_memory_sizes,
+                            num_buckets=num_buckets,
                         )
                         dependency = None
                         if isinstance(child_module, EmbeddingTower):
@@ -976,21 +1029,63 @@ class EmbeddingEnumerator(_EmbeddingEnumerator):
 
         return sharding_options
 
+    def _get_num_buckets(self, parameter: str, module: nn.Module) -> Optional[int]:
+        """Get the per-table bucket count for virtual-table sharding.
+
+        Mirrors torchrec 1.6's ``EmbeddingEnumerator._get_num_buckets``
+        (enumerators.py:293-318): returns ``total_num_buckets`` when the
+        backing embedding config opts into virtual-table sharding,
+        otherwise ``None`` so the upstream
+        ``calculate_shard_sizes_and_offsets`` falls back to the standard
+        row-count split.
+        """
+        if isinstance(module, EmbeddingBagCollection):
+            embedding_configs = module.embedding_bag_configs()
+        elif isinstance(module, EmbeddingCollection):
+            embedding_configs = module.embedding_configs()
+        else:
+            return None
+        for config in embedding_configs:
+            if config.name == parameter and getattr(config, "use_virtual_table", False):
+                return getattr(config, "total_num_buckets", None)
+        return None
+
     # pyre-ignore [14]
     def _filter_sharding_types(
-        self, name: str, allowed_sharding_types: List[str], child_path: str
+        self,
+        name: str,
+        allowed_sharding_types: List[str],
+        child_path: str,
+        sharder_key: str = "",
     ) -> List[str]:
         _constraints, key = self._get_constraints(child_path, name)
         # GRID_SHARD is only supported if specified by user in parameter constraints
+        # ROW based shardings on FeatureProcessedEmbeddingBagCollection require
+        # explicit user opt-in (matches torchrec 1.6 enumerators.py:344-365).
+        is_fp_module = "FeatureProcessedEmbeddingBagCollection" in sharder_key
         if not _constraints or not _constraints.get(key):
-            return [
+            filtered = [
                 t for t in allowed_sharding_types if t != ShardingType.GRID_SHARD.value
             ]
+            if is_fp_module:
+                filtered = [
+                    t
+                    for t in filtered
+                    if t not in GUARDED_SHARDING_TYPES_FOR_FP_MODULES
+                ]
+            return filtered
         constraints: ParameterConstraints = _constraints[key]
         if not constraints.sharding_types:
-            return [
+            filtered = [
                 t for t in allowed_sharding_types if t != ShardingType.GRID_SHARD.value
             ]
+            if is_fp_module:
+                filtered = [
+                    t
+                    for t in filtered
+                    if t not in GUARDED_SHARDING_TYPES_FOR_FP_MODULES
+                ]
+            return filtered
         constrained_sharding_types: List[str] = constraints.sharding_types
 
         filtered_sharding_types = list(
