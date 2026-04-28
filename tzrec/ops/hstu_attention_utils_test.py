@@ -23,6 +23,7 @@ from typing import List, Optional, Tuple
 import torch
 from parameterized import parameterized
 
+from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import (
     apply_stu_truncation,
     apply_stu_truncation_plan,
@@ -203,6 +204,7 @@ class ApplyStuTruncationTest(unittest.TestCase):
             max_seq_len=int(max(lengths)),
             truncate_tail_len=tail,
             contextual_seq_len=ctx,
+            kernel=Kernel.PYTORCH,
         )
         torch.testing.assert_close(out_x, ref_x)
         self.assertEqual(out_lens.tolist(), ref_lens)
@@ -224,6 +226,7 @@ class ApplyStuTruncationTest(unittest.TestCase):
                 num_targets=None,
                 max_seq_len=6,
                 truncate_tail_len=-1,
+                kernel=Kernel.PYTORCH,
             )
         with self.assertRaisesRegex(ValueError, "contextual_seq_len"):
             apply_stu_truncation(
@@ -233,6 +236,7 @@ class ApplyStuTruncationTest(unittest.TestCase):
                 max_seq_len=6,
                 truncate_tail_len=4,
                 contextual_seq_len=-1,
+                kernel=Kernel.PYTORCH,
             )
 
 
@@ -254,6 +258,7 @@ class StuTruncationPlanTest(unittest.TestCase):
             max_seq_len=14,
             truncate_tail_len=4,
             contextual_seq_len=2,
+            kernel=Kernel.PYTORCH,
         )
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
@@ -262,7 +267,7 @@ class StuTruncationPlanTest(unittest.TestCase):
             truncate_tail_len=4,
             contextual_seq_len=2,
         )
-        out_x = apply_stu_truncation_plan(x, plan)
+        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
         torch.testing.assert_close(out_x, wrapped_x)
         torch.testing.assert_close(plan.new_x_offsets, wrapped_off)
         torch.testing.assert_close(plan.new_lengths, wrapped_lens)
@@ -293,8 +298,8 @@ class StuTruncationPlanTest(unittest.TestCase):
         # the same original index in `ts` (= row * 7.0).
         ref_x, _ = _reference_truncation(x, offsets, [2, 3], truncate_tail_len=3)
         ref_ts, _ = _reference_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
-        out_x = apply_stu_truncation_plan(x, plan)
-        out_ts = apply_stu_truncation_plan(ts, plan)
+        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
+        out_ts = apply_stu_truncation_plan(ts, plan, kernel=Kernel.PYTORCH)
         torch.testing.assert_close(out_x, ref_x)
         torch.testing.assert_close(out_ts, ref_ts)
 

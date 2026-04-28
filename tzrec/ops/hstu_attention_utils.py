@@ -231,7 +231,9 @@ def compute_stu_truncation_plan(
             * contextual_seq_len
         )
         offsets_rest = x_offsets - offsets_prefix
-        new_x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(new_lengths)
+        # ``new_lengths_b = C + rest_tail_lengths_b`` so cumsum(new_lengths)
+        # equals offsets_prefix + offsets_tail; saves one cumsum kernel.
+        new_x_offsets = offsets_prefix + offsets_tail
     else:
         offsets_prefix = None
         offsets_rest = None
@@ -252,7 +254,7 @@ def compute_stu_truncation_plan(
 def apply_stu_truncation_plan(
     x: torch.Tensor,
     plan: STUTruncationPlan,
-    kernel: Kernel = Kernel.PYTORCH,
+    kernel: Kernel,
 ) -> torch.Tensor:
     """Apply a precomputed truncation plan to a jagged tensor.
 
@@ -315,7 +317,7 @@ def apply_stu_truncation(
     *,
     truncate_tail_len: int,
     contextual_seq_len: int = 0,
-    kernel: Kernel = Kernel.PYTORCH,
+    kernel: Kernel,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     """Truncate the UIH portion of each jagged sample to ``truncate_tail_len``.
 
