@@ -25,7 +25,6 @@ from parameterized import parameterized
 
 from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import (
-    apply_stu_truncation,
     apply_stu_truncation_plan,
     build_sla_func_tensor,
     compute_stu_truncation_plan,
@@ -175,8 +174,8 @@ class BuildSlaFuncTensorTest(unittest.TestCase):
         self.assertEqual(func[0, 2, 5].item(), 3)
 
 
-class ApplyStuTruncationTest(unittest.TestCase):
-    """Spec-vs-impl: ``apply_stu_truncation`` matches the Python reference."""
+class StuTruncationTest(unittest.TestCase):
+    """``compute_stu_truncation_plan`` + ``apply_stu_truncation_plan``."""
 
     @parameterized.expand(
         [
@@ -197,20 +196,19 @@ class ApplyStuTruncationTest(unittest.TestCase):
             torch.tensor(targets, dtype=torch.int64) if targets is not None else None
         )
         ref_x, ref_lens = _reference_truncation(x, offsets, targets, tail, ctx)
-        out_x, out_off, out_lens, out_max = apply_stu_truncation(
-            x=x,
+        plan = compute_stu_truncation_plan(
             x_offsets=offsets,
             num_targets=num_targets,
             max_seq_len=int(max(lengths)),
             truncate_tail_len=tail,
             contextual_seq_len=ctx,
-            kernel=Kernel.PYTORCH,
         )
+        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
         torch.testing.assert_close(out_x, ref_x)
-        self.assertEqual(out_lens.tolist(), ref_lens)
-        self.assertEqual(out_max, max(ref_lens))
+        self.assertEqual(plan.new_lengths.tolist(), ref_lens)
+        self.assertEqual(plan.new_max_seq_len, max(ref_lens))
         self.assertEqual(
-            out_off.tolist(),
+            plan.new_x_offsets.tolist(),
             list(itertools.accumulate([0] + ref_lens)),
         )
 
@@ -218,60 +216,21 @@ class ApplyStuTruncationTest(unittest.TestCase):
         offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
             torch.tensor([6], dtype=torch.int64)
         )
-        x = torch.randn(int(offsets[-1].item()), 4)
         with self.assertRaisesRegex(ValueError, "truncate_tail_len"):
-            apply_stu_truncation(
-                x=x,
+            compute_stu_truncation_plan(
                 x_offsets=offsets,
                 num_targets=None,
                 max_seq_len=6,
                 truncate_tail_len=-1,
-                kernel=Kernel.PYTORCH,
             )
         with self.assertRaisesRegex(ValueError, "contextual_seq_len"):
-            apply_stu_truncation(
-                x=x,
+            compute_stu_truncation_plan(
                 x_offsets=offsets,
                 num_targets=None,
                 max_seq_len=6,
                 truncate_tail_len=4,
                 contextual_seq_len=-1,
-                kernel=Kernel.PYTORCH,
             )
-
-
-class StuTruncationPlanTest(unittest.TestCase):
-    """``compute_stu_truncation_plan`` + ``apply_stu_truncation_plan``."""
-
-    def test_plan_apply_matches_apply_stu_truncation(self) -> None:
-        """Two-step plan + apply matches the wrapper bit-for-bit."""
-        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
-            torch.tensor([10, 14, 6], dtype=torch.int64)
-        )
-        x = torch.randn(int(offsets[-1].item()), 4)
-        num_targets = torch.tensor([2, 3, 1], dtype=torch.int64)
-
-        wrapped_x, wrapped_off, wrapped_lens, wrapped_max = apply_stu_truncation(
-            x=x,
-            x_offsets=offsets,
-            num_targets=num_targets,
-            max_seq_len=14,
-            truncate_tail_len=4,
-            contextual_seq_len=2,
-            kernel=Kernel.PYTORCH,
-        )
-        plan = compute_stu_truncation_plan(
-            x_offsets=offsets,
-            num_targets=num_targets,
-            max_seq_len=14,
-            truncate_tail_len=4,
-            contextual_seq_len=2,
-        )
-        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
-        torch.testing.assert_close(out_x, wrapped_x)
-        torch.testing.assert_close(plan.new_x_offsets, wrapped_off)
-        torch.testing.assert_close(plan.new_lengths, wrapped_lens)
-        self.assertEqual(plan.new_max_seq_len, wrapped_max)
 
     def test_replay_on_parallel_jagged(self) -> None:
         """A single plan can be applied to multiple parallel jagged tensors.
@@ -294,8 +253,6 @@ class StuTruncationPlanTest(unittest.TestCase):
             max_seq_len=12,
             truncate_tail_len=3,
         )
-        # Build parallel reference: every kept row in `x` corresponds to
-        # the same original index in `ts` (= row * 7.0).
         ref_x, _ = _reference_truncation(x, offsets, [2, 3], truncate_tail_len=3)
         ref_ts, _ = _reference_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
         out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)

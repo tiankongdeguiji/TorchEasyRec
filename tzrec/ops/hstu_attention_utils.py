@@ -12,7 +12,7 @@
 """Backend-agnostic helpers for HSTU attention: SLA mask builder + truncation."""
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -289,51 +289,3 @@ def apply_stu_truncation_plan(
         kernel=kernel,
     )
     return x_kept
-
-
-def apply_stu_truncation(
-    x: torch.Tensor,
-    x_offsets: torch.Tensor,
-    num_targets: Optional[torch.Tensor],
-    max_seq_len: int,
-    *,
-    truncate_tail_len: int,
-    contextual_seq_len: int = 0,
-    kernel: Kernel,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-    """Truncate the UIH portion of each jagged sample to ``truncate_tail_len``.
-
-    Sample layout is ``[contextual(C) | UIH(U_b) | targets(T_b)]`` with
-    ``L_b = C + U_b + T_b``.  ``truncate_tail_len`` caps the UIH portion
-    only; contextual prefix and all targets are preserved.
-
-    Thin wrapper around :func:`compute_stu_truncation_plan` +
-    :func:`apply_stu_truncation_plan`; callers that need to apply the
-    same truncation to multiple jagged tensors (e.g. ``x`` and a parallel
-    timestamp tensor) should call those two directly to avoid recomputing
-    the plan.
-
-    Args:
-        x: jagged values of shape ``(total, D)``.
-        x_offsets: cumulative offsets ``(B + 1,)``.
-        num_targets: per-sample target counts ``(B,)`` or ``None``.
-        max_seq_len: padded max length of the input batch.
-        truncate_tail_len: maximum UIH tokens kept per sample.  Must be
-            non-negative; ``0`` drops all UIH.
-        contextual_seq_len: number of leading contextual tokens to
-            preserve (uniform across the batch).
-        kernel: backend for the underlying jagged ops.
-
-    Returns:
-        ``(x, new_x_offsets, new_lengths, new_max_seq_len)`` with
-        post-truncation values.
-    """
-    plan = compute_stu_truncation_plan(
-        x_offsets=x_offsets,
-        num_targets=num_targets,
-        max_seq_len=max_seq_len,
-        truncate_tail_len=truncate_tail_len,
-        contextual_seq_len=contextual_seq_len,
-    )
-    x = apply_stu_truncation_plan(x, plan, kernel=kernel)
-    return x, plan.new_x_offsets, plan.new_lengths, plan.new_max_seq_len
