@@ -260,6 +260,7 @@ def _hstu_attn_fwd_one_block(  # noqa: C901
     n_targets,
     alpha,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     contextual_seq_len,
     max_attn_len,
     CAUSAL: tl.constexpr,
@@ -323,7 +324,7 @@ def _hstu_attn_fwd_one_block(  # noqa: C901
         invalid_mask = invalid_mask | (
             (offs_m[:, None] == 0) & (offs_n[None, :] < max_ids)
         )
-    scale = tl.where(invalid_mask, (1.0 / MAX_SEQ_LEN), 0.0)
+    scale = tl.where(invalid_mask, (1.0 / SCALING_SEQ_LEN), 0.0)
     silu = qk * tl.sigmoid(qk) * scale
     v = None
     if ENABLE_TMA:
@@ -357,6 +358,7 @@ def _hstu_attn_fwd_compute(  # noqa C901
     stride_oh,
     alpha,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     DeltaSize,
     contextual_seq_len,
     max_attn_len,
@@ -505,6 +507,7 @@ def _hstu_attn_fwd_compute(  # noqa C901
                 n_targets=n_targets if HAS_MULTIPLE_TARGETS else None,
                 alpha=alpha,
                 MAX_SEQ_LEN=MAX_SEQ_LEN,
+                SCALING_SEQ_LEN=SCALING_SEQ_LEN,
                 contextual_seq_len=contextual_seq_len,
                 max_attn_len=max_attn_len,
                 CAUSAL=CAUSAL,
@@ -550,6 +553,7 @@ def _hstu_attn_fwd_compute(  # noqa C901
                         n_targets=n_targets if HAS_MULTIPLE_TARGETS else None,
                         alpha=alpha,
                         MAX_SEQ_LEN=MAX_SEQ_LEN,
+                        SCALING_SEQ_LEN=SCALING_SEQ_LEN,
                         contextual_seq_len=contextual_seq_len,
                         max_attn_len=max_attn_len,
                         CAUSAL=CAUSAL,
@@ -618,6 +622,7 @@ def _hstu_attn_fwd(  # noqa C901
     AUTOTUNE_Z,
     H,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     AUTOTUNE_MAX_SEQ_LEN,  # Quantized MAX_SEQ_LEN used as an autotuning key
     DimQ,
     DimV,
@@ -663,6 +668,7 @@ def _hstu_attn_fwd(  # noqa C901
         stride_oh=stride_oh,
         alpha=alpha,
         MAX_SEQ_LEN=MAX_SEQ_LEN,
+        SCALING_SEQ_LEN=SCALING_SEQ_LEN,
         DeltaSize=DeltaSize,
         contextual_seq_len=contextual_seq_len,
         max_attn_len=max_attn_len,
@@ -711,6 +717,7 @@ def _hstu_attn_bwd_one_block(  # noqa C901
     stride_dqm,
     alpha,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     CAUSAL: tl.constexpr,
     HAS_MULTIPLE_TARGETS: tl.constexpr,
     HAS_CONTEXTUAL_SEQ_LEN: tl.constexpr,
@@ -752,7 +759,7 @@ def _hstu_attn_bwd_one_block(  # noqa C901
         )
     qk_trans = tl.dot(k, q_trans, allow_tf32=ALLOW_TF32) * alpha
     sig_trans = tl.sigmoid(qk_trans)
-    silu_trans = qk_trans * sig_trans * (1.0 / MAX_SEQ_LEN)
+    silu_trans = qk_trans * sig_trans * (1.0 / SCALING_SEQ_LEN)
     pos_offs_m_minus_n = pos_offs_m[None, :] - pos_offs_n[:, None]
     if not CAUSAL:
         pos_offs_m_minus_n = tl.where(
@@ -783,7 +790,10 @@ def _hstu_attn_bwd_one_block(  # noqa C901
     # compute dk and dq
     dqk_trans = tl.dot(v, tl.trans(do), allow_tf32=ALLOW_TF32)
     dqk_trans = (
-        dqk_trans * sig_trans * (1 + qk_trans * (1 - sig_trans)) * (1.0 / MAX_SEQ_LEN)
+        dqk_trans
+        * sig_trans
+        * (1 + qk_trans * (1 - sig_trans))
+        * (1.0 / SCALING_SEQ_LEN)
     )
     dqk_trans = tl.where(invalid_mask_trans, dqk_trans, 0)
     dqk_trans = dqk_trans.to(k.dtype)
@@ -853,6 +863,7 @@ def _hstu_attn_bwd_one_col_block(  # noqa C901
     stride_dvn,
     alpha,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     CAUSAL: tl.constexpr,
     HAS_MULTIPLE_TARGETS: tl.constexpr,
     HAS_CONTEXTUAL_SEQ_LEN: tl.constexpr,
@@ -965,6 +976,7 @@ def _hstu_attn_bwd_one_col_block(  # noqa C901
                 stride_dqm=stride_dqm,
                 alpha=alpha,
                 MAX_SEQ_LEN=MAX_SEQ_LEN,
+                SCALING_SEQ_LEN=SCALING_SEQ_LEN,
                 CAUSAL=CAUSAL,
                 HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
                 HAS_CONTEXTUAL_SEQ_LEN=HAS_CONTEXTUAL_SEQ_LEN,
@@ -1005,6 +1017,7 @@ def _hstu_attn_bwd_one_col_block(  # noqa C901
             stride_dqm=stride_dqm,
             alpha=alpha,
             MAX_SEQ_LEN=MAX_SEQ_LEN,
+            SCALING_SEQ_LEN=SCALING_SEQ_LEN,
             CAUSAL=CAUSAL,
             HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
             HAS_CONTEXTUAL_SEQ_LEN=HAS_CONTEXTUAL_SEQ_LEN,
@@ -1284,6 +1297,7 @@ def _hstu_attn_bwd(  # noqa C901
     AUTOTUNE_Z,
     H,
     MAX_SEQ_LEN,
+    SCALING_SEQ_LEN,
     AUTOTUNE_MAX_SEQ_LEN,  # Quantized MAX_SEQ_LEN used as an autotuning key
     DimQ,
     DimV,
@@ -1433,6 +1447,7 @@ def _hstu_attn_bwd(  # noqa C901
             stride_dvn=stride_dvn,
             alpha=alpha,
             MAX_SEQ_LEN=MAX_SEQ_LEN,
+            SCALING_SEQ_LEN=SCALING_SEQ_LEN,
             CAUSAL=CAUSAL,
             HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
             HAS_CONTEXTUAL_SEQ_LEN=HAS_CONTEXTUAL_SEQ_LEN,
@@ -1484,6 +1499,7 @@ def _hstu_attn_bwd(  # noqa C901
                 stride_dvn=stride_dvn,
                 alpha=alpha,
                 MAX_SEQ_LEN=MAX_SEQ_LEN,
+                SCALING_SEQ_LEN=SCALING_SEQ_LEN,
                 CAUSAL=CAUSAL,
                 HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
                 HAS_CONTEXTUAL_SEQ_LEN=HAS_CONTEXTUAL_SEQ_LEN,
@@ -1513,7 +1529,10 @@ def triton_hstu_attention_fwd(
     contextual_seq_len: int,
     sort_by_length_indices: Optional[torch.Tensor],
     enable_tma: bool,
+    scaling_seqlen: int = -1,
 ) -> torch.Tensor:
+    if scaling_seqlen == -1:
+        scaling_seqlen = N
     Z = seq_offsets.numel() - 1
     AUTOTUNE_Z = prev_power_of_2(Z)
     L, H, DimQ = q.shape
@@ -1584,6 +1603,7 @@ def triton_hstu_attention_fwd(
         AUTOTUNE_Z=AUTOTUNE_Z,
         H=H,
         MAX_SEQ_LEN=N,
+        SCALING_SEQ_LEN=scaling_seqlen,
         AUTOTUNE_MAX_SEQ_LEN=autotune_max_seq_len(N),
         DimQ=DimQ,
         DimV=DimV,
@@ -1621,7 +1641,10 @@ def triton_hstu_attention_bwd(
     contextual_seq_len: int,
     sort_by_length_indices: Optional[torch.Tensor],
     enable_tma: bool,
+    scaling_seqlen: int = -1,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if scaling_seqlen == -1:
+        scaling_seqlen = N
     dout = switch_to_contiguous_if_needed(dout)
     dq = switch_to_contiguous_if_needed(dq)
     dk = switch_to_contiguous_if_needed(dk)
@@ -1687,6 +1710,7 @@ def triton_hstu_attention_bwd(
         AUTOTUNE_Z=AUTOTUNE_Z,
         H=H,
         MAX_SEQ_LEN=N,
+        SCALING_SEQ_LEN=scaling_seqlen,
         AUTOTUNE_MAX_SEQ_LEN=autotune_max_seq_len(N),
         DimQ=DimQ,
         DimV=DimV,
@@ -1722,7 +1746,10 @@ class _AttentionFunction(torch.autograd.Function):
         contextual_seq_len: int,
         sort_by_length: bool,
         enable_tma: bool,
+        scaling_seqlen: int = -1,
     ) -> torch.Tensor:
+        if scaling_seqlen == -1:
+            scaling_seqlen = N
         sort_by_length_indices = None
         if sort_by_length:
             seq_lengths = seq_offsets[1:] - seq_offsets[:-1]
@@ -1740,6 +1767,7 @@ class _AttentionFunction(torch.autograd.Function):
         ctx.has_multiple_targets = num_targets is not None
         ctx.max_attn_len = max_attn_len
         ctx.N = N
+        ctx.scaling_seqlen = scaling_seqlen
         ctx.contextual_seq_len = contextual_seq_len
         ctx.sort_by_length = sort_by_length
         ctx.enable_tma = enable_tma
@@ -1756,6 +1784,7 @@ class _AttentionFunction(torch.autograd.Function):
             contextual_seq_len=contextual_seq_len,
             sort_by_length_indices=sort_by_length_indices,
             enable_tma=enable_tma,
+            scaling_seqlen=scaling_seqlen,
         )
 
     @staticmethod
@@ -1768,6 +1797,7 @@ class _AttentionFunction(torch.autograd.Function):
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
+        None,
         None,
         None,
         None,
@@ -1809,6 +1839,7 @@ class _AttentionFunction(torch.autograd.Function):
                 contextual_seq_len=ctx.contextual_seq_len,
                 sort_by_length_indices=sort_by_length_indices,
                 enable_tma=ctx.enable_tma,
+                scaling_seqlen=ctx.scaling_seqlen,
             )
             return (
                 None,
@@ -1816,6 +1847,7 @@ class _AttentionFunction(torch.autograd.Function):
                 dq,
                 dk,
                 dv,
+                None,
                 None,
                 None,
                 None,
@@ -1839,6 +1871,7 @@ def triton_hstu_mha(
     contextual_seq_len: int = 0,
     sort_by_length: bool = False,
     enable_tma: bool = False,
+    scaling_seqlen: int = -1,
 ) -> torch.Tensor:
     return _AttentionFunction.apply(
         max_seq_len,
@@ -1853,6 +1886,7 @@ def triton_hstu_mha(
         contextual_seq_len,
         sort_by_length,
         enable_tma,
+        scaling_seqlen,
     )
 
 
@@ -1868,7 +1902,10 @@ def triton_cached_hstu_mha(
     max_attn_len: int = 0,
     contextual_seq_len: int = 0,
     enable_tma: bool = False,
+    scaling_seqlen: int = -1,
 ) -> torch.Tensor:
+    if scaling_seqlen == -1:
+        scaling_seqlen = max_seq_len
     N = max_seq_len
     Z = seq_offsets.size(0) - 1
     AUTOTUNE_Z = prev_power_of_2(Z)
@@ -1939,6 +1976,7 @@ def triton_cached_hstu_mha(
         AUTOTUNE_Z=AUTOTUNE_Z,
         H=H,
         MAX_SEQ_LEN=N,
+        SCALING_SEQ_LEN=scaling_seqlen,
         AUTOTUNE_MAX_SEQ_LEN=autotune_max_seq_len(N),
         DimQ=DimQ,
         DimV=DimV,

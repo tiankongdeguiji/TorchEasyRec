@@ -10,7 +10,6 @@
 # limitations under the License.
 
 
-import json
 import os
 from typing import Any, Dict, Optional, Set, Union
 
@@ -62,7 +61,10 @@ def load_model_aot(
         )
         return UnifiedAOTIModelWrapper(model)
     else:
-        # Legacy two-stage path: sparse JIT + dense AOTI
+        # Legacy two-stage path: sparse JIT + dense AOTI.
+        # Disable TensorExpr fuser: its lazy first-call compile is not
+        # thread-safe under the predict worker pool.
+        torch._C._jit_set_texpr_fuser_enabled(False)
         sparse_model: torch.jit.ScriptModule = torch.jit.load(
             os.path.join(model_path, "scripted_sparse_model.pt"),
             map_location=device,
@@ -108,19 +110,33 @@ def export_model_aot(
     sparse_model_scripted.save(os.path.join(save_dir, "scripted_sparse_model.pt"))
 
     batch = torch.export.Dim("batch", min=1, max=499999999)
-    dynamic_shapes = {}
+    dynamic_shapes: Dict[str, Dict[int, torch.export.Dim]] = {}
     seq_tensor_names = meta_info.get("seq_tensor_names", [])
     jagged_seq_tensor_names = meta_info.get("jagged_seq_tensor_names", [])
+    seq_share_groups = meta_info.get("seq_share_groups", {})
+
+    # Separate caches per axis: a SEQUENCE group and a JAGGED_SEQUENCE
+    # group from the same parent SequenceFeature share a lengths source,
+    # but the Dims they need are different symbolic quantities — max
+    # seq_len (axis 1, padded) vs total nnz (axis 0, jagged).
+    seq_len_dims: Dict[str, torch.export.Dim] = {}
+    jagged_batch_dims: Dict[str, torch.export.Dim] = {}
+
     for key in sparse_output.keys():
         if key in seq_tensor_names:
-            dynamic_shapes[key] = {
-                0: batch,
-                1: torch.export.Dim(f"{key}__seq_len", min=1, max=999999993),
-            }
+            share_key = seq_share_groups.get(key, key)
+            if share_key not in seq_len_dims:
+                seq_len_dims[share_key] = torch.export.Dim(
+                    f"{share_key}__seq_len", min=1, max=999999993
+                )
+            dynamic_shapes[key] = {0: batch, 1: seq_len_dims[share_key]}
         elif key in jagged_seq_tensor_names:
-            dynamic_shapes[key] = {
-                0: torch.export.Dim(f"{key}__batch", min=1, max=999999993)
-            }
+            share_key = seq_share_groups.get(key, key)
+            if share_key not in jagged_batch_dims:
+                jagged_batch_dims[share_key] = torch.export.Dim(
+                    f"{share_key}__batch", min=1, max=999999993
+                )
+            dynamic_shapes[key] = {0: jagged_batch_dims[share_key]}
         else:
             dynamic_shapes[key] = {0: batch}
 
@@ -131,14 +147,6 @@ def export_model_aot(
     dense_to_export: nn.Module = dense_model
     if mixed_precision:
         dense_to_export = CudaAutocastWrapper(dense_model, mixed_precision)
-
-    # Dry-run the wrapped module to capture output field names. Must run
-    # through dense_to_export (not dense_model) so the autocast context is
-    # active — kernels like CUTLASS HSTU attention reject fp32 inputs.
-    with torch.no_grad():
-        _out = dense_to_export(sparse_output)
-        aoti_output_keys = list(_out.keys())
-        del _out
 
     # pre_hook requires running arbitrary code at runtime
     with torch._inductor.config.patch(
@@ -158,15 +166,6 @@ def export_model_aot(
     ):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
-
-        # Save original model output field names to aoti directory
-        if aoti_output_keys:
-            output_names_path = os.path.join(aoti_dir, "output_field_names.json")
-            with open(output_names_path, "w") as f:
-                json.dump(aoti_output_keys, f, indent=4)
-            logger.info(
-                f"Saved output field names to {output_names_path}: {aoti_output_keys}"
-            )
 
         torch._inductor.aoti_compile_and_package(
             exported_pg,
@@ -407,10 +406,6 @@ def export_unified_model_aot(
     with open(os.path.join(save_dir, "gm.code"), "w") as f:
         f.write(full_gm.code)
 
-    result = full_gm(data)
-    aoti_output_keys = list(result.keys())
-    del result
-
     # Pad any 0-size non-sequence sparse .values tensors so torch.export
     # doesn't specialize on the empty size (which conflicts with dynamic Dims).
     seq_feat_names = {f.name for f in model._features if f.is_sequence}
@@ -445,16 +440,6 @@ def export_unified_model_aot(
     ):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
-
-        # Save original model output field names (matches legacy
-        # export_model_aot behavior).
-        if aoti_output_keys:
-            output_names_path = os.path.join(aoti_dir, "output_field_names.json")
-            with open(output_names_path, "w") as f:
-                json.dump(aoti_output_keys, f, indent=4)
-            logger.info(
-                f"Saved output field names to {output_names_path}: {aoti_output_keys}"
-            )
 
         torch._inductor.aoti_compile_and_package(
             exported_pg,
