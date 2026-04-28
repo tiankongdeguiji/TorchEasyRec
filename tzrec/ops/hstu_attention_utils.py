@@ -9,17 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backend-agnostic helpers for HSTU attention.
-
-Contains mask / func-tensor builders that feed the ``attn_func`` input of
-``hstu_mha`` / ``cutlass_hstu_mha`` / ``pytorch_hstu_mha``, plus the
-mid-stack attention-truncation helpers (``STUTruncationPlan``,
-``compute_stu_truncation_plan``, ``apply_stu_truncation_plan``,
-``apply_stu_truncation``).  The helpers themselves have no
-kernel-specific dependencies: the ``attn_func`` NFUNC=3 layout is shared
-between the CUTLASS production path and the PyTorch reference path, and
-the truncation helpers wrap the existing jagged split / concat ops.
-"""
+"""Backend-agnostic helpers for HSTU attention: SLA mask builder + truncation."""
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -130,31 +120,23 @@ def build_sla_func_tensor(
 
 @dataclass(frozen=True)
 class STUTruncationPlan:
-    """Precomputed offsets describing a UIH-only truncation of a jagged batch.
-
-    Produced by :func:`compute_stu_truncation_plan` and consumed by
-    :func:`apply_stu_truncation_plan`, so the same split can be replayed
-    on multiple jagged tensors that share the same ``(B, seq_lengths)``
-    layout (e.g. token embeddings + their parallel timestamps) without
-    redoing the offset arithmetic or paying a second D->H sync.
+    """Precomputed offsets for a UIH-only truncation, replayable across tensors.
 
     Fields:
         new_lengths: per-sample lengths after truncation, shape ``(B,)``.
         new_x_offsets: cumulative offsets after truncation, shape ``(B+1,)``.
-        new_max_seq_len: tight post-truncation ``max(new_lengths)``.  This
-            is the only D->H sync on the truncation path.
-        pre_max_seq_len: input ``max_seq_len`` before truncation; needed
-            by ``split_2D_jagged`` calls in :func:`apply_stu_truncation_plan`.
-        contextual_seq_len: number of leading contextual tokens preserved
-            uniformly across the batch.
+        new_max_seq_len: tight post-truncation ``max(new_lengths)``;
+            only D->H sync on the truncation path.
+        pre_max_seq_len: input ``max_seq_len`` before truncation.
+        contextual_seq_len: leading contextual tokens preserved uniformly.
         offsets_head: cumulative drop counts, shape ``(B+1,)``.
-        offsets_tail: post-truncation offsets into the
-            contextual-stripped subsequence, shape ``(B+1,)``.  Equals
-            ``new_x_offsets`` when ``contextual_seq_len == 0``.
-        offsets_prefix: cumulative offsets of the contextual prefix,
-            shape ``(B+1,)``; only set when ``contextual_seq_len > 0``.
-        offsets_rest: cumulative offsets of the post-prefix subsequence,
-            shape ``(B+1,)``; only set when ``contextual_seq_len > 0``.
+        offsets_tail: post-truncation offsets into the contextual-stripped
+            subsequence; equals ``new_x_offsets`` when
+            ``contextual_seq_len == 0``.
+        offsets_prefix: contextual-prefix cumulative offsets ``(B+1,)``;
+            only set when ``contextual_seq_len > 0``.
+        offsets_rest: post-prefix cumulative offsets ``(B+1,)``;
+            only set when ``contextual_seq_len > 0``.
     """
 
     new_lengths: torch.Tensor

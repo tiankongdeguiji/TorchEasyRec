@@ -649,23 +649,14 @@ class STULayer(STU):
 class STUStack(BaseModule):
     """Stack of ``STU`` layers with optional mid-stack attention truncation.
 
-    Threads SLA mask reuse between layers.  When truncation is enabled
-    (``truncate_split_layer > 0`` and ``truncate_tail_len > 0``), after
-    ``truncate_split_layer`` full-sequence layers the stack drops UIH
-    prefix tokens so each sample keeps at most ``truncate_tail_len`` UIH
-    tokens; contextual prefix and targets always survive.  Crossing the
-    truncation boundary invalidates the per-layer SLA cache so the next
-    layer rebuilds the func tensor against the new offsets.
-
     Args:
         stu_list (List[STU]): list of STU layers.
-        truncate_split_layer (int): layer index ``N1`` after which
-            mid-stack truncation fires.  Must be in ``(0, len(stu_list))``
-            when truncation is enabled, else ``0``.
-        truncate_tail_len (int): number of trailing UIH tokens kept on
-            layers ``>= N1``.  Both ``truncate_split_layer`` and
-            ``truncate_tail_len`` must be ``> 0`` to enable truncation;
-            setting only one is rejected at construction.
+        truncate_split_layer (int): layer index after which UIH tokens
+            are truncated.  Must be in ``(0, len(stu_list))`` when
+            ``truncate_tail_len > 0``, else ``0``.
+        truncate_tail_len (int): max UIH tokens kept on layers
+            ``>= truncate_split_layer``.  Both fields must be ``> 0``
+            to enable truncation.
         is_inference (bool): whether to run in inference mode.
     """
 
