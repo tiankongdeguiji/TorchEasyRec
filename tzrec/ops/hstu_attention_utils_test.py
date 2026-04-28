@@ -18,7 +18,6 @@ depending on the GPU attention kernels.
 
 import itertools
 import unittest
-from typing import List, Optional, Tuple
 
 import torch
 from parameterized import parameterized
@@ -29,32 +28,7 @@ from tzrec.ops.hstu_attention_utils import (
     build_sla_func_tensor,
     compute_stu_truncation_plan,
 )
-
-
-def _reference_truncation(
-    x: torch.Tensor,
-    x_offsets: torch.Tensor,
-    num_targets: Optional[List[int]],
-    truncate_tail_len: int,
-    contextual_seq_len: int = 0,
-) -> Tuple[torch.Tensor, List[int]]:
-    """Plain-Python UIH-only truncation: ``[ctx | last min(U, tail) UIH | targets]``."""
-    chunks: List[torch.Tensor] = []
-    new_lens: List[int] = []
-    for b in range(x_offsets.numel() - 1):
-        s, e = int(x_offsets[b].item()), int(x_offsets[b + 1].item())
-        L = e - s
-        T = int(num_targets[b]) if num_targets is not None else 0
-        U = L - contextual_seq_len - T
-        new_uih = max(0, min(U, truncate_tail_len))
-        prefix = x[s : s + contextual_seq_len]
-        uih_kept = x[
-            s + contextual_seq_len + (U - new_uih) : s + contextual_seq_len + U
-        ]
-        targets = x[e - T : e]
-        chunks.append(torch.cat([prefix, uih_kept, targets], dim=0))
-        new_lens.append(contextual_seq_len + new_uih + T)
-    return torch.cat(chunks, dim=0), new_lens
+from tzrec.utils.test_util import reference_stu_truncation
 
 
 class BuildSlaFuncTensorTest(unittest.TestCase):
@@ -195,7 +169,7 @@ class StuTruncationTest(unittest.TestCase):
         num_targets = (
             torch.tensor(targets, dtype=torch.int64) if targets is not None else None
         )
-        ref_x, ref_lens = _reference_truncation(x, offsets, targets, tail, ctx)
+        ref_x, ref_lens = reference_stu_truncation(x, offsets, targets, tail, ctx)
         plan = compute_stu_truncation_plan(
             x_offsets=offsets,
             num_targets=num_targets,
@@ -253,8 +227,8 @@ class StuTruncationTest(unittest.TestCase):
             max_seq_len=12,
             truncate_tail_len=3,
         )
-        ref_x, _ = _reference_truncation(x, offsets, [2, 3], truncate_tail_len=3)
-        ref_ts, _ = _reference_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
+        ref_x, _ = reference_stu_truncation(x, offsets, [2, 3], truncate_tail_len=3)
+        ref_ts, _ = reference_stu_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
         out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
         out_ts = apply_stu_truncation_plan(ts, plan, kernel=Kernel.PYTORCH)
         torch.testing.assert_close(out_x, ref_x)
