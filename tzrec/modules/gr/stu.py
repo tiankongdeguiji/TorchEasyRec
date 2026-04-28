@@ -61,6 +61,7 @@ class STU(BaseModule, abc.ABC):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod
     def truncate_input(
         self,
         x: torch.Tensor,
@@ -72,9 +73,10 @@ class STU(BaseModule, abc.ABC):
     ) -> Tuple[torch.Tensor, torch.Tensor, int, STUTruncationPlan]:
         """Truncate the UIH tail of the jagged batch before this layer.
 
-        Default impl raises -- subclasses that participate in mid-stack
-        truncation must override using their own ``contextual_seq_len``
-        and ``kernel()``.
+        Subclasses that don't participate in mid-stack truncation should
+        override and ``raise NotImplementedError(...)`` from their
+        override -- the abstract decorator forces a deliberate choice
+        at subclass instantiation rather than at the truncating call site.
 
         Args:
             x: jagged values ``(total, D)``.
@@ -86,11 +88,7 @@ class STU(BaseModule, abc.ABC):
         Returns:
             ``(x, x_offsets, max_seq_len, plan)`` post-truncation.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__}.truncate_input not implemented; "
-            f"this STU subclass cannot participate in STUStack mid-stack "
-            f"truncation."
-        )
+        ...
 
     @abc.abstractmethod
     def forward(
@@ -673,6 +671,12 @@ class STUStack(BaseModule):
     ) -> None:
         super().__init__(is_inference=is_inference)
         self._stu_layers: torch.nn.ModuleList = torch.nn.ModuleList(modules=stu_list)
+        if truncate_split_layer < 0 or truncate_tail_len < 0:
+            raise ValueError(
+                f"truncate_split_layer and truncate_tail_len must be "
+                f"non-negative; got truncate_split_layer={truncate_split_layer}, "
+                f"truncate_tail_len={truncate_tail_len}."
+            )
         if (truncate_split_layer > 0) != (truncate_tail_len > 0):
             raise ValueError(
                 f"truncate_split_layer and truncate_tail_len must both be "

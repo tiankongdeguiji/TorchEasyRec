@@ -11,7 +11,7 @@
 
 import copy
 import unittest
-from typing import List, Optional
+from typing import List
 
 import torch
 from hypothesis import Verbosity, given, settings
@@ -19,26 +19,7 @@ from hypothesis import strategies as st
 from parameterized import parameterized
 
 from tzrec.ops import Kernel
-from tzrec.utils.test_util import gpu_unavailable
-
-
-def _expected_truncation_lengths(
-    lengths: List[int],
-    targets: Optional[List[int]],
-    truncate_tail_len: int,
-    contextual_seq_len: int = 0,
-    enabled: bool = True,
-) -> List[int]:
-    """Reference computation of post-truncation per-sample lengths."""
-    if not enabled:
-        return list(lengths)
-    out: List[int] = []
-    for i, length in enumerate(lengths):
-        t = targets[i] if targets is not None else 0
-        u = length - contextual_seq_len - t
-        new_uih = max(0, min(u, truncate_tail_len))
-        out.append(contextual_seq_len + new_uih + t)
-    return out
+from tzrec.utils.test_util import gpu_unavailable, reference_stu_truncation
 
 
 def _inplace_swap(
@@ -626,6 +607,20 @@ class STUStackTruncationTest(unittest.TestCase):
                 truncate_split_layer=0,
                 truncate_tail_len=4,
             )
+        # Negative pair: would XOR-equal to False and silently disable.
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            STUStack(
+                stu_list=stu_list,
+                truncate_split_layer=-1,
+                truncate_tail_len=-1,
+            )
+        # Single negative: rejected before the XOR check.
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            STUStack(
+                stu_list=stu_list,
+                truncate_split_layer=-1,
+                truncate_tail_len=4,
+            )
         # Valid: enabled.
         STUStack(stu_list=stu_list, truncate_split_layer=1, truncate_tail_len=4)
         # Valid: disabled (defaults).
@@ -678,9 +673,16 @@ class STUStackTruncationTest(unittest.TestCase):
         out, new_offsets, new_max, plan = self._forward(
             stack, D, x_lengths, num_targets
         )
-        expected_lens = _expected_truncation_lengths(
-            lengths, targets, tail, enabled=(split > 0 and tail > 0)
-        )
+        if split > 0 and tail > 0:
+            offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(x_lengths)
+            _, expected_lens = reference_stu_truncation(
+                torch.zeros(int(offsets[-1].item()), 1),
+                offsets,
+                targets,
+                truncate_tail_len=tail,
+            )
+        else:
+            expected_lens = list(lengths)
         self.assertEqual(plan is not None, expects_plan)
         self.assertEqual((new_offsets[1:] - new_offsets[:-1]).tolist(), expected_lens)
         self.assertEqual(out.size(0), sum(expected_lens))
