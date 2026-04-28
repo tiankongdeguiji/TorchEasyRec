@@ -384,7 +384,7 @@ class StuTest(unittest.TestCase):
         ).requires_grad_(True)
 
         # default forward().
-        ref_y = stu(
+        ref_y, _, _, _ = stu(
             x=x,
             x_offsets=x_offsets,
             max_seq_len=max_seq_len,
