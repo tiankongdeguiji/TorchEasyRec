@@ -60,7 +60,6 @@ class HSTUTransducer(BaseModule):
             seq-length.
         is_inference (bool): whether to run in inference mode.
         return_full_embeddings (bool): return all embeddings or not.
-        listwise (bool): listwise training or not.
         attn_truncation_split_layer (int): layer index ``N1`` after which
             mid-stack attention truncation fires.  Must be in
             ``(0, attn_num_layers)`` when truncation is enabled, else 0.
@@ -86,7 +85,6 @@ class HSTUTransducer(BaseModule):
         scaling_seqlen: int = -1,
         is_inference: bool = True,
         return_full_embeddings: bool = False,
-        listwise: bool = False,
         attn_truncation_split_layer: int = 0,
         attn_truncation_tail_len: int = 0,
     ) -> None:
@@ -122,7 +120,6 @@ class HSTUTransducer(BaseModule):
             )
         self._input_dropout_ratio: float = input_dropout_ratio
         self._return_full_embeddings: bool = return_full_embeddings
-        self._listwise_training: bool = listwise and self.is_train
 
     def _preprocess(
         self, grouped_features
@@ -156,9 +153,7 @@ class HSTUTransducer(BaseModule):
                     seq_offsets=output_seq_offsets,
                     seq_timestamps=output_seq_timestamps,
                     seq_embeddings=output_seq_embeddings,
-                    num_targets=(
-                        None if self._listwise_training else output_num_targets
-                    ),
+                    num_targets=output_num_targets,
                 )
 
         output_seq_embeddings = torch.nn.functional.dropout(
@@ -192,7 +187,7 @@ class HSTUTransducer(BaseModule):
                 max_seq_len=max_seq_len,
                 x=seq_embeddings,
                 x_offsets=seq_offsets,
-                num_targets=(None if self._listwise_training else num_targets),
+                num_targets=num_targets,
             )
 
     def _postprocess(
@@ -266,7 +261,14 @@ class HSTUTransducer(BaseModule):
         plan: Optional[STUTruncationPlan],
         kernel: Kernel,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[int]]:
-        """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata."""
+        """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata.
+
+        When ``plan is None``, returns inputs unchanged. When ``plan is not
+        None``, returns post-truncation ``(seq_timestamps, plan.new_lengths,
+        post_stu_seq_offsets, post_stu_max_seq_len, None)`` -- the trailing
+        ``None`` replaces ``total_uih_len`` so the caller's
+        ``split_2D_jagged`` can re-derive it from the truncated offsets.
+        """
         if plan is None:
             return (
                 seq_timestamps,
@@ -278,8 +280,6 @@ class HSTUTransducer(BaseModule):
         seq_timestamps = apply_stu_truncation_plan(
             seq_timestamps.unsqueeze(-1), plan, kernel=kernel
         ).squeeze(-1)
-        # Pre-truncation total_uih_len no longer matches the truncated
-        # embeddings; passing None lets split_2D_jagged derive it.
         return (
             seq_timestamps,
             plan.new_lengths,

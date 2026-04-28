@@ -152,7 +152,6 @@ class DlrmHSTU(RankModel):
             scaling_seqlen=self._model_config.max_seq_len,
             **config_to_kwargs(self._model_config.hstu),
             return_full_embeddings=False,
-            listwise=False,
         )
 
         # item embeddings
