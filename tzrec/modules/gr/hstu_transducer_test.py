@@ -21,7 +21,7 @@ from parameterized import parameterized
 from tzrec.modules.gr.hstu_transducer import HSTUTransducer
 from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import compute_stu_truncation_plan
-from tzrec.ops.hstu_attention_utils_test import _reference_truncation
+from tzrec.utils.test_util import reference_stu_truncation
 
 
 class _StubInputPreprocessor(torch.nn.Module):
@@ -37,18 +37,20 @@ class _StubInputPreprocessor(torch.nn.Module):
         targets: List[int],
         embedding_dim: int,
         contextual_seq_len: int,
+        interleave_targets: bool = False,
     ) -> None:
         super().__init__()
         self._lengths = lengths
         self._targets = targets
         self._embedding_dim = embedding_dim
         self._contextual_seq_len = contextual_seq_len
+        self._interleave_targets = interleave_targets
 
     def contextual_seq_len(self) -> int:
         return self._contextual_seq_len
 
     def interleave_targets(self) -> bool:
-        return False
+        return self._interleave_targets
 
     def forward(self, grouped_features):
         seq_lengths = torch.tensor(self._lengths, dtype=torch.int64)
@@ -149,7 +151,7 @@ class HSTUTransducerTest(unittest.TestCase):
         out_ts, out_lens, out_offsets, out_max, out_total_uih = out
 
         # Timestamps truncated against an independent reference.
-        ref_ts, _ = _reference_truncation(
+        ref_ts, _ = reference_stu_truncation(
             s["seq_timestamps"].unsqueeze(-1),
             s["offsets"],
             s["targets"],
@@ -175,6 +177,8 @@ class HSTUTransducerTest(unittest.TestCase):
         attn_truncation_tail_len: int,
         lengths: List[int],
         targets: List[int],
+        contextual_seq_len: int = 0,
+        interleave_targets: bool = False,
         embedding_dim: int = 16,
         attn_num_layers: int = 3,
     ) -> HSTUTransducer:
@@ -189,7 +193,8 @@ class HSTUTransducerTest(unittest.TestCase):
             lengths=lengths,
             targets=targets,
             embedding_dim=embedding_dim,
-            contextual_seq_len=0,
+            contextual_seq_len=contextual_seq_len,
+            interleave_targets=interleave_targets,
         )
         stub_post = _StubOutputPostprocessor()
         with (
@@ -228,33 +233,47 @@ class HSTUTransducerTest(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # attn_truncation_split_layer, attn_truncation_tail_len
-            [0, 0],  # disabled baseline
-            [1, 4],  # truncation enabled; tail=4 bites for samples with U>4
+            # split, tail, interleave, ctx, lengths,         targets
+            [0, 0, False, 0, [12, 20, 5, 30], [2, 3, 1, 2]],  # disabled baseline
+            [1, 4, False, 0, [12, 20, 5, 30], [2, 3, 1, 2]],  # truncation, plain
+            [1, 4, True, 0, [12, 20, 5, 30], [2, 4, 2, 2]],  # interleave (T=10, even)
+            [1, 4, False, 3, [15, 22, 8, 30], [2, 3, 1, 2]],  # contextual prefix
+            [1, 4, True, 3, [15, 22, 8, 30], [2, 4, 2, 2]],  # interleave + ctx
         ]
     )
-    def test_forward_end_to_end(self, split: int, tail: int) -> None:
-        """Full ``forward`` runs cleanly with truncation on/off.
+    def test_forward_end_to_end(
+        self,
+        split: int,
+        tail: int,
+        interleave: bool,
+        ctx: int,
+        lengths: List[int],
+        targets: List[int],
+    ) -> None:
+        """Full ``forward`` runs cleanly across the (interleave, ctx) matrix.
 
         Catches: wrong field assignment in ``_replay_truncation_state``,
         num_targets / seq_lengths mismatch in ``_postprocess`` after
-        truncation, kernel not threading through, or shape mismatch on
-        the seq_timestamps unsqueeze/squeeze round-trip.  Any of these
-        would raise or produce non-finite output here.
+        truncation, kernel not threading through, shape mismatch on the
+        seq_timestamps unsqueeze/squeeze round-trip, the
+        ``view(-1, 2)`` candidate reshape under interleave, and the
+        3-op contextual-prefix path through ``apply_stu_truncation_plan``.
         """
-        lengths = [12, 20, 5, 30]
-        targets = [2, 3, 1, 2]
         transducer = self._build_transducer(
             attn_truncation_split_layer=split,
             attn_truncation_tail_len=tail,
             lengths=lengths,
             targets=targets,
+            contextual_seq_len=ctx,
+            interleave_targets=interleave,
         )
         # grouped_features is consumed by the stubbed preprocessor only.
         grouped_features: Dict[str, torch.Tensor] = {}
         encoded_candidate_embeddings, encoded_embeddings = transducer(grouped_features)
         self.assertTrue(torch.isfinite(encoded_candidate_embeddings).all())
-        self.assertEqual(encoded_candidate_embeddings.size(0), sum(targets))
+        # Under interleave, candidates are reshaped (T, D) -> (T // 2, D).
+        expected_rows = sum(targets) // (2 if interleave else 1)
+        self.assertEqual(encoded_candidate_embeddings.size(0), expected_rows)
         # return_full_embeddings=False (default), so encoded_embeddings is None.
         self.assertIsNone(encoded_embeddings)
 
