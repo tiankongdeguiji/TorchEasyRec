@@ -158,12 +158,6 @@ class TokenizeFeature(IdFeature):
             "tokenizer_type": self.config.tokenizer_type,
             "output_type": "word_id",
         }
-        # output_delim concatenates token ids into a single delimited string;
-        # in grouped-sequence mode pyfg>=1.0.5 expects the inner feature to
-        # emit per-token outputs (the sequence wrapper handles delimiting),
-        # so output_delim must be omitted there.
-        if not self.is_grouped_sequence:
-            fg_cfg["output_delim"] = self._fg_encoded_multival_sep
         if self.config.HasField("stub_type"):
             fg_cfg["stub_type"] = self.config.stub_type
         if self.is_grouped_sequence:
