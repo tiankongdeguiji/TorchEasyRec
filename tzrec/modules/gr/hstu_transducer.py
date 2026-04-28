@@ -266,14 +266,7 @@ class HSTUTransducer(BaseModule):
         plan: Optional[STUTruncationPlan],
         kernel: Kernel,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[int]]:
-        """Replay a truncation plan on the parallel jagged ``seq_timestamps``.
-
-        Refreshes dependent metadata (``seq_lengths``, ``seq_offsets``,
-        ``max_seq_len``, ``total_uih_len``) when ``plan`` is non-None;
-        passes input through untouched when ``plan`` is None.  Static so
-        tests can call it without constructing a full transducer
-        (preprocessor / postprocessor configs are heavy).
-        """
+        """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata."""
         if plan is None:
             return (
                 seq_timestamps,

@@ -9,12 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Focused unit tests for ``HSTUTransducer`` plan-replay glue.
-
-The full ``forward`` requires a configured input preprocessor + output
-postprocessor; tests here exercise the post-stack truncation block in
-isolation via the static ``_replay_truncation_state`` helper.
-"""
+"""Unit tests for ``HSTUTransducer._replay_truncation_state``."""
 
 import unittest
 
