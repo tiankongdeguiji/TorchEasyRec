@@ -26,6 +26,7 @@ from tzrec.modules.gr.postprocessors import (
 from tzrec.modules.gr.preprocessors import InputPreprocessor, create_input_preprocessor
 from tzrec.modules.gr.stu import STULayer, STUStack
 from tzrec.modules.utils import BaseModule
+from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import (
     STUTruncationPlan,
     apply_stu_truncation_plan,
@@ -253,6 +254,47 @@ class HSTUTransducer(BaseModule):
                 candidate_embeddings,
             )
 
+    @staticmethod
+    def _replay_truncation_state(
+        seq_timestamps: torch.Tensor,
+        seq_lengths: torch.Tensor,
+        seq_offsets: torch.Tensor,
+        max_seq_len: int,
+        total_uih_len: int,
+        post_stu_seq_offsets: torch.Tensor,
+        post_stu_max_seq_len: int,
+        plan: Optional[STUTruncationPlan],
+        kernel: Kernel,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[int]]:
+        """Replay a truncation plan on the parallel jagged ``seq_timestamps``.
+
+        Refreshes dependent metadata (``seq_lengths``, ``seq_offsets``,
+        ``max_seq_len``, ``total_uih_len``) when ``plan`` is non-None;
+        passes input through untouched when ``plan`` is None.  Static so
+        tests can call it without constructing a full transducer
+        (preprocessor / postprocessor configs are heavy).
+        """
+        if plan is None:
+            return (
+                seq_timestamps,
+                seq_lengths,
+                seq_offsets,
+                max_seq_len,
+                total_uih_len,
+            )
+        seq_timestamps = apply_stu_truncation_plan(
+            seq_timestamps.unsqueeze(-1), plan, kernel=kernel
+        ).squeeze(-1)
+        # Pre-truncation total_uih_len no longer matches the truncated
+        # embeddings; passing None lets split_2D_jagged derive it.
+        return (
+            seq_timestamps,
+            plan.new_lengths,
+            post_stu_seq_offsets,
+            post_stu_max_seq_len,
+            None,
+        )
+
     def forward(
         self, grouped_features: Dict[str, torch.Tensor]
     ) -> Tuple[
@@ -296,17 +338,23 @@ class HSTUTransducer(BaseModule):
         # When STUStack truncated mid-stack, replay the same split on the
         # parallel jagged seq_timestamps so the postprocessor's UIH /
         # candidate split lines up with the truncated embeddings.
-        post_truncation_total_uih_len: Optional[int] = total_uih_len
-        if plan is not None:
-            seq_timestamps = apply_stu_truncation_plan(
-                seq_timestamps.unsqueeze(-1), plan, kernel=self.kernel()
-            ).squeeze(-1)
-            seq_lengths = plan.new_lengths
-            seq_offsets = post_stu_seq_offsets
-            max_seq_len = post_stu_max_seq_len
-            # Pre-truncation total_uih_len no longer matches the truncated
-            # embeddings; passing None lets split_2D_jagged derive it.
-            post_truncation_total_uih_len = None
+        (
+            seq_timestamps,
+            seq_lengths,
+            seq_offsets,
+            max_seq_len,
+            post_truncation_total_uih_len,
+        ) = self._replay_truncation_state(
+            seq_timestamps=seq_timestamps,
+            seq_lengths=seq_lengths,
+            seq_offsets=seq_offsets,
+            max_seq_len=max_seq_len,
+            total_uih_len=total_uih_len,
+            post_stu_seq_offsets=post_stu_seq_offsets,
+            post_stu_max_seq_len=post_stu_max_seq_len,
+            plan=plan,
+            kernel=self.kernel(),
+        )
 
         encoded_embeddings, encoded_candidate_embeddings = self._postprocess(
             max_seq_len=max_seq_len,
