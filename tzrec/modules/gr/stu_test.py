@@ -11,7 +11,7 @@
 
 import copy
 import unittest
-from typing import List
+from typing import List, Optional
 
 import torch
 from hypothesis import Verbosity, given, settings
@@ -20,6 +20,25 @@ from parameterized import parameterized
 
 from tzrec.ops import Kernel
 from tzrec.utils.test_util import gpu_unavailable
+
+
+def _expected_truncation_lengths(
+    lengths: List[int],
+    targets: Optional[List[int]],
+    truncate_tail_len: int,
+    contextual_seq_len: int = 0,
+    enabled: bool = True,
+) -> List[int]:
+    """Reference computation of post-truncation per-sample lengths."""
+    if not enabled:
+        return list(lengths)
+    out: List[int] = []
+    for i, length in enumerate(lengths):
+        t = targets[i] if targets is not None else 0
+        u = length - contextual_seq_len - t
+        new_uih = max(0, min(u, truncate_tail_len))
+        out.append(contextual_seq_len + new_uih + t)
+    return out
 
 
 def _inplace_swap(
@@ -644,8 +663,10 @@ class STUStackTruncationTest(unittest.TestCase):
     ) -> None:
         """Stack returns ``(x, offsets, max, plan)`` and threads num_targets.
 
-        Helper-level tests verify the offset arithmetic; this confirms the
-        stack invokes truncation at split_layer and returns plan iff enabled.
+        Asserts post-truncation lengths against an independent Python
+        reference, so a regression that silently corrupts ``x``'s row
+        count fails (the trivial ``out.size(0) == new_offsets[-1]``
+        identity would otherwise pass).
         """
         stack, D = self._make_stack(
             num_layers=3, truncate_split_layer=split, truncate_tail_len=tail
@@ -657,12 +678,13 @@ class STUStackTruncationTest(unittest.TestCase):
         out, new_offsets, new_max, plan = self._forward(
             stack, D, x_lengths, num_targets
         )
-        self.assertEqual(plan is not None, expects_plan)
-        self.assertEqual(out.size(0), int(new_offsets[-1].item()))
-        self.assertEqual(
-            new_max,
-            int((new_offsets[1:] - new_offsets[:-1]).max().item()),
+        expected_lens = _expected_truncation_lengths(
+            lengths, targets, tail, enabled=(split > 0 and tail > 0)
         )
+        self.assertEqual(plan is not None, expects_plan)
+        self.assertEqual((new_offsets[1:] - new_offsets[:-1]).tolist(), expected_lens)
+        self.assertEqual(out.size(0), sum(expected_lens))
+        self.assertEqual(new_max, max(expected_lens))
 
     def test_cached_forward_raises_on_truncation(self) -> None:
         """Train/serve firewall: ``cached_forward`` refuses truncation."""
