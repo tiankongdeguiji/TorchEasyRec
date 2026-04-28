@@ -21,6 +21,7 @@ from torchrec.distributed.planner import (
     planners,
     shard_estimators,
 )
+from torchrec.distributed.planner.estimator.types import HardwarePerfConfig
 from torchrec.distributed.planner.types import (
     ParameterConstraints,
     ShardingOption,
@@ -381,15 +382,36 @@ if has_dynamicemb:
     # pyre-ignore [9]
     planners.to_sharding_plan = _to_sharding_plan
 
-    # NOTE: torchrec 1.5 had a module-level ``shard_estimators.kernel_bw_lookup``
-    # that the legacy EmbeddingPerfEstimator called directly; tzrec used to
-    # monkey-patch that binding to teach it about CUSTOMIZED_KERNEL. After the
-    # 1.6 estimator refactor (PR #3723), shard_estimators no longer imports
-    # kernel_bw_lookup at all — the live call moved into
-    # ``HardwarePerfConfig.get_device_bw`` on the new factory-built estimator.
-    # The CUSTOMIZED_KERNEL bandwidth override is now installed by
-    # ``tzrec.utils.plan_util.EmbeddingEnumerator`` directly on that config
-    # (caching_ratio-aware), which keeps the formula in one place.
+    _orig_hw_perf_config_get_device_bw = HardwarePerfConfig.get_device_bw
+
+    def _customized_kernel_aware_get_device_bw(
+        self,  # pyre-ignore [2]
+        compute_device: str,
+        compute_kernel: str,
+        hbm_mem_bw: float,
+        ddr_mem_bw: float,
+        ssd_mem_bw: float,
+        hbm_to_ddr_mem_bw: float,
+        caching_ratio: Optional[float] = None,
+        prefetch_pipeline: bool = False,
+    ) -> Optional[float]:
+        if compute_kernel == EmbeddingComputeKernel.CUSTOMIZED_KERNEL.value:
+            cr = caching_ratio if caching_ratio is not None else 0.0
+            return (cr * hbm_mem_bw + (1 - cr) * hbm_to_ddr_mem_bw) / 10
+        return _orig_hw_perf_config_get_device_bw(
+            self,
+            compute_device,
+            compute_kernel,
+            hbm_mem_bw,
+            ddr_mem_bw,
+            ssd_mem_bw,
+            hbm_to_ddr_mem_bw,
+            caching_ratio,
+            prefetch_pipeline,
+        )
+
+    # pyre-ignore [9]
+    HardwarePerfConfig.get_device_bw = _customized_kernel_aware_get_device_bw
 
     def _calculate_dynamicemb_storage_specific_sizes(
         tensor: torch.Tensor,
@@ -567,17 +589,6 @@ if has_dynamicemb:
             )
             for hbm_size, ddr_size in zip(hbm_sizes, ddr_sizes)
         ]
-
-    # NOTE: dynamicemb 0.1.0 already provides
-    # ``GroupedEmbeddingsLookup._create_embedding_kernel`` and
-    # ``GroupedPooledEmbeddingsLookup._create_embedding_kernel`` overrides
-    # (recsys-examples@c7b9ea2:corelib/dynamicemb/dynamicemb/planner/
-    # rw_sharding.py:55-186) that dispatch CUSTOMIZED_KERNEL to
-    # BatchedDynamicEmbedding{,Bag} and pass ``env`` to torchrec's super on
-    # 1.5+. tzrec used to re-bind the same methods for the dynamicemb 0.0.1
-    # era; on 0.1.0 those re-binds are redundant and would shadow upstream's
-    # version-aware fallback, so we now rely entirely on dynamicemb's own
-    # overrides.
 
     from torchrec.sparse import jagged_tensor_validator as _jtv
 
