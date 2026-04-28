@@ -102,11 +102,11 @@ class STU(BaseModule, abc.ABC):
         max_kv_caching_len: int = 0,
         kv_caching_lengths: Optional[torch.Tensor] = None,
         prev_attn_func: Optional[torch.Tensor] = None,
-        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None,
+        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool, int]] = None,
     ) -> Tuple[
         torch.Tensor,
         Optional[torch.Tensor],
-        Optional[Tuple[int, int, int, int, bool]],
+        Optional[Tuple[int, int, int, int, bool, int]],
     ]:
         """Forward the layer.
 
@@ -120,16 +120,16 @@ class STU(BaseModule, abc.ABC):
             prev_attn_func (Optional[torch.Tensor]): SLA NFUNC mask tensor
                 produced by the previous layer in the stack, available for
                 reuse when the current layer's signature matches.
-            prev_attn_func_sig (Optional[Tuple[int,int,int,int,bool]]):
+            prev_attn_func_sig (Optional[Tuple[int,int,int,int,bool,int]]):
                 signature ``(sla_k1, sla_k2, contextual_seq_len, num_heads,
-                target_aware)`` describing the SLA config that produced
-                ``prev_attn_func``.
+                target_aware, total_q)`` describing the SLA config and
+                jagged token count that produced ``prev_attn_func``.
+                Including ``total_q`` ensures the cache invalidates
+                automatically when offsets / token count change mid-stack
+                (e.g. after attention truncation).
 
         Returns:
-            Tuple of ``(output, attn_func, attn_func_sig)``.  The sig
-            does not encode offsets / num_targets identity; reuse
-            assumes all layers in one stack forward see the same
-            offsets.
+            Tuple of ``(output, attn_func, attn_func_sig)``.
         """
         pass
 
@@ -451,11 +451,11 @@ class STULayer(STU):
         max_kv_caching_len: int = 0,
         kv_caching_lengths: Optional[torch.Tensor] = None,
         prev_attn_func: Optional[torch.Tensor] = None,
-        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None,
+        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool, int]] = None,
     ) -> Tuple[
         torch.Tensor,
         Optional[torch.Tensor],
-        Optional[Tuple[int, int, int, int, bool]],
+        Optional[Tuple[int, int, int, int, bool, int]],
     ]:
         """Forward the layer.
 
@@ -468,15 +468,18 @@ class STULayer(STU):
             kv_caching_lengths (Optional[torch.Tensor]): key-value caching lengths.
             prev_attn_func (Optional[torch.Tensor]): SLA NFUNC mask
                 from the previous layer; reused if sig matches.
-            prev_attn_func_sig (Optional[Tuple[int,int,int,int,bool]]):
+            prev_attn_func_sig (Optional[Tuple[int,int,int,int,bool,int]]):
                 ``(sla_k1, sla_k2, contextual_seq_len, num_heads,
-                target_aware)`` of ``prev_attn_func``.
+                target_aware, total_q)`` of ``prev_attn_func``.  The
+                trailing ``total_q`` makes the cache automatically
+                invalidate when ``x.size(0)`` changes mid-stack
+                (e.g. across an attention-truncation boundary).
 
         Returns:
             ``(output, attn_func, attn_func_sig)``.
         """
         attn_func: Optional[torch.Tensor] = None
-        attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None
+        attn_func_sig: Optional[Tuple[int, int, int, int, bool, int]] = None
         uses_sla = self._sla_k1 > 0 or self._sla_k2 > 0
         if uses_sla:
             if self.kernel() == Kernel.TRITON:
@@ -484,12 +487,13 @@ class STULayer(STU):
                     "SLA (sla_k1 / sla_k2 > 0) requires Kernel.CUTLASS or "
                     "Kernel.PYTORCH; Kernel.TRITON has no NFUNC mask path."
                 )
-            my_sig: Tuple[int, int, int, int, bool] = (
+            my_sig: Tuple[int, int, int, int, bool, int] = (
                 self._sla_k1,
                 self._sla_k2,
                 self._contextual_seq_len,
                 self._num_heads,
                 self._target_aware,
+                x.size(0),
             )
             if my_sig == prev_attn_func_sig and prev_attn_func is not None:
                 attn_func = prev_attn_func
@@ -719,7 +723,7 @@ class STUStack(BaseModule):
         """
         plan: Optional[STUTruncationPlan] = None
         prev_attn_func: Optional[torch.Tensor] = None
-        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None
+        prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool, int]] = None
         for i, layer in enumerate(self._stu_layers):
             if self._truncate_tail_len > 0 and i == self._truncate_split_layer:
                 x, x_offsets, max_seq_len, plan = layer.truncate_input(
@@ -729,9 +733,9 @@ class STUStack(BaseModule):
                     num_targets,
                     truncate_tail_len=self._truncate_tail_len,
                 )
-                # SLA cache keyed on offsets / total_q; both changed.
-                prev_attn_func = None
-                prev_attn_func_sig = None
+                # No manual cache reset: total_q in the sig changes after
+                # truncation, so the next layer's sig comparison naturally
+                # misses and rebuilds the func tensor.
             x, prev_attn_func, prev_attn_func_sig = layer(
                 x=x,
                 x_offsets=x_offsets,
