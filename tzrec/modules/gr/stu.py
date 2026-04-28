@@ -61,6 +61,37 @@ class STU(BaseModule, abc.ABC):
         """
         raise NotImplementedError
 
+    def truncate_input(
+        self,
+        x: torch.Tensor,
+        x_offsets: torch.Tensor,
+        max_seq_len: int,
+        num_targets: Optional[torch.Tensor],
+        *,
+        truncate_tail_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int, STUTruncationPlan]:
+        """Truncate the UIH tail of the jagged batch before this layer.
+
+        Default impl raises -- subclasses that participate in mid-stack
+        truncation must override using their own ``contextual_seq_len``
+        and ``kernel()``.
+
+        Args:
+            x: jagged values ``(total, D)``.
+            x_offsets: cumulative offsets ``(B + 1,)``.
+            max_seq_len: padded max length.
+            num_targets: per-sample target counts ``(B,)`` or ``None``.
+            truncate_tail_len: max UIH tokens kept per sample.
+
+        Returns:
+            ``(x, x_offsets, max_seq_len, plan)`` post-truncation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__}.truncate_input not implemented; "
+            f"this STU subclass cannot participate in STUStack mid-stack "
+            f"truncation."
+        )
+
     @abc.abstractmethod
     def forward(
         self,
@@ -391,6 +422,26 @@ class STULayer(STU):
             kv_caching_offsets=self.kv_caching_offsets,
         )
 
+    def truncate_input(
+        self,
+        x: torch.Tensor,
+        x_offsets: torch.Tensor,
+        max_seq_len: int,
+        num_targets: Optional[torch.Tensor],
+        *,
+        truncate_tail_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int, STUTruncationPlan]:
+        """Truncate the UIH tail of the jagged batch before this layer."""
+        plan = compute_stu_truncation_plan(
+            x_offsets=x_offsets,
+            num_targets=num_targets,
+            max_seq_len=max_seq_len,
+            truncate_tail_len=truncate_tail_len,
+            contextual_seq_len=self._contextual_seq_len,
+        )
+        x = apply_stu_truncation_plan(x, plan, kernel=self.kernel())
+        return x, plan.new_x_offsets, plan.new_max_seq_len, plan
+
     def forward(
         self,
         x: torch.Tensor,
@@ -680,16 +731,13 @@ class STUStack(BaseModule):
         prev_attn_func_sig: Optional[Tuple[int, int, int, int, bool]] = None
         for i, layer in enumerate(self._stu_layers):
             if self._truncate_tail_len > 0 and i == self._truncate_split_layer:
-                plan = compute_stu_truncation_plan(
-                    x_offsets=x_offsets,
-                    num_targets=num_targets,
-                    max_seq_len=max_seq_len,
+                x, x_offsets, max_seq_len, plan = layer.truncate_input(
+                    x,
+                    x_offsets,
+                    max_seq_len,
+                    num_targets,
                     truncate_tail_len=self._truncate_tail_len,
-                    contextual_seq_len=self._stu_layers[0]._contextual_seq_len,
                 )
-                x = apply_stu_truncation_plan(x, plan, kernel=self.kernel())
-                x_offsets = plan.new_x_offsets
-                max_seq_len = plan.new_max_seq_len
                 # SLA cache keyed on offsets / total_q; both changed.
                 prev_attn_func = None
                 prev_attn_func_sig = None
