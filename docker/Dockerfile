@@ -40,8 +40,7 @@ RUN case ${DEVICE} in \
                  rm -f /usr/local/cuda && \
                  rm -rf /var/lib/apt/lists/* ;; \
     esac
-ARG CACHE_BUST_PIP=
-RUN : ${CACHE_BUST_PIP:-x} && case ${DEVICE} in \
+RUN case ${DEVICE} in \
         "cu126") pip install torch==2.11.0 -f https://mirrors.aliyun.com/pytorch-wheels/cu126 && \
                  pip install fbgemm-gpu==1.6.0 -f https://tzrec.oss-accelerate.aliyuncs.com/third_party/fbgemm_gpu/cu126/repo.html && \
                  pip uninstall -y nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 nvidia-nvjitlink-cu12 nvidia-nvtx-cu12 && \
