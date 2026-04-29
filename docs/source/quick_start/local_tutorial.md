@@ -35,7 +35,7 @@ pip install tzrec==${TZREC_NIGHTLY_VERSION} -f http://tzrec.oss-accelerate.aliyu
 ```
 GPU版本（CUDA 12.9) 镜像地址:
   mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:${TZREC_DOCKER_VERSION}-cu129
-GPU版本（CUDA 12.6 - 不包含TensorRT) 镜像地址:
+GPU版本（CUDA 12.6) 镜像地址:
   mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:${TZREC_DOCKER_VERSION}-cu126
 CPU版本 镜像地址:
   mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:${TZREC_DOCKER_VERSION}-cpu
