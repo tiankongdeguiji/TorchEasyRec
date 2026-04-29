@@ -67,6 +67,10 @@ class HSTUTransducer(BaseModule):
             on layers ``>= N1``.  Both ``attn_truncation_split_layer`` and
             ``attn_truncation_tail_len`` must be ``> 0`` to enable
             truncation; setting only one is rejected at construction.
+        name (str): MoT channel name. Forwarded to the input preprocessor;
+            when non-empty the channel name replaces the default ``uih``
+            prefix on UIH-side keys read from ``grouped_features``. Empty
+            (default) preserves the single-channel ``uih.*`` lookups.
     """
 
     def __init__(
@@ -87,6 +91,7 @@ class HSTUTransducer(BaseModule):
         return_full_embeddings: bool = False,
         attn_truncation_split_layer: int = 0,
         attn_truncation_tail_len: int = 0,
+        name: str = "",
     ) -> None:
         super().__init__(is_inference=is_inference)
         self._input_preprocessor: InputPreprocessor = create_input_preprocessor(
@@ -97,6 +102,7 @@ class HSTUTransducer(BaseModule):
             max_contextual_seq_len=max_contextual_seq_len,
             contextual_group_name=contextual_group_name,
             output_embedding_dim=stu["embedding_dim"],
+            name=name,
         )
         stu = dict(stu)
         if "contextual_seq_len" not in stu:
