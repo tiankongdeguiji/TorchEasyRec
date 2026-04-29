@@ -45,9 +45,7 @@ CPU版本 镜像地址:
 
 - **CUDA 12.9** 镜像：`sm_75 / 80 / 86 / 90 / 100 / 120`（含
   `compute_120` PTX）。覆盖 T4、A10/A30/A100、L4/L20、H100/H200、
-  B100/B200 等 CC ≥ 7.5 的卡。**Tesla V100 (CC 7.0)、P100 (CC 6.0)
-  等老卡不受支持**，运行时会看到 `Found GPU0 ... CC 7.0` 的警告且
-  无法启动 CUDA kernel。
+  B100/B200 等 CC ≥ 7.5 的卡。
 - **CUDA 12.6** 镜像：`sm_70 / 75 / 80 / 86 / 90`。覆盖 Volta
   (V100)、Turing (T4)、Ampere (A10/A30/A100)、Hopper (H100) 等
   CC 7.0–9.0 的卡，但不支持 Blackwell。
