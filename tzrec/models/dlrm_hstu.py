@@ -102,10 +102,10 @@ class DlrmHSTU(RankModel):
             "invalid model config: %s" % self._model_config.WhichOneof("model")
         )
         assert isinstance(self._model_config, multi_task_rank_pb2.DlrmHSTU)
-        self._init_after_assert()
+        self._init()
 
-    def _init_after_assert(self) -> None:
-        """Initialize after the model-type assertion has passed.
+    def _init(self) -> None:
+        """Build the embedding group, transducer, item MLP, and tower.
 
         Subclasses (e.g. UltraHSTU) override ``__init__`` with their own
         model-type assertion and then call this helper, reusing the same

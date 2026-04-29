@@ -123,10 +123,10 @@ class ContextualInterleavePreprocessor(InputPreprocessor):
         is_inference (bool): whether to run in inference mode.
         name (str): MoT channel name. When non-empty the channel name
             replaces the default ``uih`` prefix on UIH-side keys read
-            from ``grouped_features`` (e.g. ``name="consumption"`` reads
-            ``consumption.sequence``, ``consumption_action.sequence``,
-            ``consumption_watchtime.sequence``,
-            ``consumption_timestamp.sequence``). Empty (default)
+            from ``grouped_features`` (e.g. ``name="uih_click"`` reads
+            ``uih_click.sequence``, ``uih_click_action.sequence``,
+            ``uih_click_watchtime.sequence``,
+            ``uih_click_timestamp.sequence``). Empty (default)
             preserves the original ``uih.sequence``,
             ``uih_action.sequence``, etc. lookups.
     """

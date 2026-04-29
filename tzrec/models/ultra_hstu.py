@@ -42,16 +42,10 @@ class _HSTUTransducerStack(torch.nn.Module):
         self, grouped_features: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         cand_list: List[torch.Tensor] = []
-        full_list: List[Optional[torch.Tensor]] = []
         for transducer in self._transducers:
-            cand, full = transducer(grouped_features)
+            cand, _ = transducer(grouped_features)
             cand_list.append(cand)
-            full_list.append(full)
-        fused_cand = torch.cat(cand_list, dim=-1)
-        fused_full: Optional[torch.Tensor] = None
-        if all(f is not None for f in full_list):
-            fused_full = torch.cat([f for f in full_list if f is not None], dim=-1)
-        return fused_cand, fused_full
+        return torch.cat(cand_list, dim=-1), None
 
 
 class UltraHSTU(DlrmHSTU):
@@ -62,10 +56,10 @@ class UltraHSTU(DlrmHSTU):
     concatenates their per-candidate outputs along the embedding dim.
     The candidate-side feature group (``candidate``) and the contextual
     group are shared across all channels; the UIH-side groups for each
-    channel are named after that channel (e.g. for ``name="consumption"``
-    the embedding group dict provides ``consumption.sequence``,
-    ``consumption_action.sequence``, ``consumption_watchtime.sequence``
-    and ``consumption_timestamp.sequence``).
+    channel are named after that channel (e.g. for ``name="uih_click"``
+    the embedding group dict provides ``uih_click.sequence``,
+    ``uih_click_action.sequence``, ``uih_click_watchtime.sequence``
+    and ``uih_click_timestamp.sequence``).
 
     Args:
         model_config (ModelConfig): an instance of ModelConfig.
@@ -99,7 +93,7 @@ class UltraHSTU(DlrmHSTU):
                 "When UltraHSTU has >= 2 channels every channel must set a "
                 f"unique non-empty `name`, got {names!r}"
             )
-        self._init_after_assert()
+        self._init()
 
     def _build_transducer(
         self, contextual_feature_dim: int, max_contextual_seq_len: int
