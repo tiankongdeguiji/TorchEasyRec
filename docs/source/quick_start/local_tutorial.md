@@ -48,9 +48,11 @@ CPU版本 镜像地址:
   B100/B200 等 CC ≥ 7.5 的卡。**Tesla V100 (CC 7.0)、P100 (CC 6.0)
   等老卡不受支持**，运行时会看到 `Found GPU0 ... CC 7.0` 的警告且
   无法启动 CUDA kernel。
-- **CUDA 12.6** 镜像：`sm_50 / 60 / 70 / 75 / 80 / 86 / 90`。覆盖
-  Pascal (P100/P40)、Volta (V100)、Turing (T4)、Ampere
-  (A10/A30/A100)、Hopper (H100) 等 CC 5.0–9.0 的卡，但不支持 Blackwell。
+- **CUDA 12.6** 镜像：`sm_70 / 75 / 80 / 86 / 90`。覆盖 Volta
+  (V100)、Turing (T4)、Ampere (A10/A30/A100)、Hopper (H100) 等
+  CC 7.0–9.0 的卡，但不支持 Blackwell。注意 fbgemm-gpu 不再编译
+  sm_50/sm_60 的 SASS，所以 Pascal (P100/P40) 等 CC 6.x 显卡即便
+  PyTorch 能识别，sparse embedding kernel 仍会失败，请勿使用。
 
 ## 前置准备
 
