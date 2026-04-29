@@ -44,11 +44,12 @@ CPU版本 镜像地址:
 注意：两个 GPU 镜像中 PyTorch 编译的 SASS 目标不同，请按显卡 CC 选择：
 
 - **CUDA 12.9** 镜像：`sm_75 / 80 / 86 / 90 / 100 / 120`（含
-  `compute_120` PTX）。覆盖 T4、A10/A30/A100、L4/L20、H100/H200、
-  B100/B200 等 CC ≥ 7.5 的卡。
+  `compute_120` PTX）。覆盖 Turing (T4)、Ampere (A10/A30/A100、
+  L4/L20)、Hopper (H100/H200)、Blackwell (B100/B200) 等
+  CC 7.5–12.0 的卡。
 - **CUDA 12.6** 镜像：`sm_70 / 75 / 80 / 86 / 90`。覆盖 Volta
-  (V100)、Turing (T4)、Ampere (A10/A30/A100)、Hopper (H100) 等
-  CC 7.0–9.0 的卡，但不支持 Blackwell。
+  (V100)、Turing (T4)、Ampere (A10/A30/A100、L4/L20)、Hopper
+  (H100) 等 CC 7.0–9.0 的卡，不支持 Blackwell。
 
 ## 前置准备
 
