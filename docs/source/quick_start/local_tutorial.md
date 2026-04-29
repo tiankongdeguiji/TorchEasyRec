@@ -41,11 +41,16 @@ CPU版本 镜像地址:
   mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:${TZREC_DOCKER_VERSION}-cpu
 ```
 
-注意：CUDA 12.9 镜像中的 PyTorch 仅为 compute capability ≥ 7.5
-的 GPU 编译（例如 T4、A100、L4、L20、H100、H200、B200 等）。
-CC < 7.5 的旧型号（如 Tesla V100、P100、P40 等 CC 7.0/6.x 卡）
-在该镜像下会触发 PyTorch 的 `Found GPU0 ... CC 7.0` 警告并无法运行
-CUDA kernel；这类机器请改用 CUDA 12.6 镜像。
+注意：两个 GPU 镜像中 PyTorch 编译的 SASS 目标不同，请按显卡 CC 选择：
+
+- **CUDA 12.9** 镜像：`sm_75 / 80 / 86 / 90 / 100 / 120`（含
+  `compute_120` PTX）。覆盖 T4、A10/A30/A100、L4/L20、H100/H200、
+  B100/B200 等 CC ≥ 7.5 的卡。**Tesla V100 (CC 7.0)、P100 (CC 6.0)
+  等老卡不受支持**，运行时会看到 `Found GPU0 ... CC 7.0` 的警告且
+  无法启动 CUDA kernel。
+- **CUDA 12.6** 镜像：`sm_50 / 60 / 70 / 75 / 80 / 86 / 90`。覆盖
+  Pascal (P100/P40)、Volta (V100)、Turing (T4)、Ampere
+  (A10/A30/A100)、Hopper (H100) 等 CC 5.0–9.0 的卡，但不支持 Blackwell。
 
 ## 前置准备
 
