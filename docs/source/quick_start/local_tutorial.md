@@ -41,6 +41,12 @@ CPU版本 镜像地址:
   mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:${TZREC_DOCKER_VERSION}-cpu
 ```
 
+注意：CUDA 12.9 镜像中的 PyTorch 仅为 compute capability ≥ 7.5
+的 GPU 编译（例如 T4、A100、L4、L20、H100、H200、B200 等）。
+CC < 7.5 的旧型号（如 Tesla V100、P100、P40 等 CC 7.0/6.x 卡）
+在该镜像下会触发 PyTorch 的 `Found GPU0 ... CC 7.0` 警告并无法运行
+CUDA kernel；这类机器请改用 CUDA 12.6 镜像。
+
 ## 前置准备
 
 ### 数据
