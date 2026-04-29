@@ -287,4 +287,11 @@ message HSTU {
     required GRInputPreprocessor input_preprocessor = 5;
     // output postprocessor
     required GROutputPostprocessor output_postprocessor = 6;
+    // Attention truncation: after this many full-sequence layers, drop UIH
+    // prefix tokens to keep only the last attn_truncation_tail_len per
+    // sample.  Contextual prefix and targets survive.  Must be in
+    // (0, attn_num_layers); 0 disables.
+    optional uint32 attn_truncation_split_layer = 7;
+    // Trailing UIH cap; both fields must be > 0 to enable truncation.
+    optional uint32 attn_truncation_tail_len = 8;
 }

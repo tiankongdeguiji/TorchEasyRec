@@ -16,11 +16,19 @@ every CI lane has direct coverage of the NFUNC mask construction without
 depending on the GPU attention kernels.
 """
 
+import itertools
 import unittest
 
 import torch
+from parameterized import parameterized
 
-from tzrec.ops.hstu_attention_utils import build_sla_func_tensor
+from tzrec.ops import Kernel
+from tzrec.ops.hstu_attention_utils import (
+    apply_stu_truncation_plan,
+    build_sla_func_tensor,
+    compute_stu_truncation_plan,
+)
+from tzrec.utils.test_util import reference_stu_truncation
 
 
 class BuildSlaFuncTensorTest(unittest.TestCase):
@@ -138,6 +146,93 @@ class BuildSlaFuncTensorTest(unittest.TestCase):
         # Local pos 2 in each sample → col_max1 == 3.
         self.assertEqual(func[0, 2, 2].item(), 3)
         self.assertEqual(func[0, 2, 5].item(), 3)
+
+
+class StuTruncationTest(unittest.TestCase):
+    """``compute_stu_truncation_plan`` + ``apply_stu_truncation_plan``."""
+
+    @parameterized.expand(
+        [
+            # lengths, targets, contextual_seq_len, truncate_tail_len
+            [[3, 5, 2], None, 0, 16],  # no-op (tail >> U)
+            [[4, 10, 7], None, 0, 5],  # head drop, no ctx, no targets
+            [[8, 12], [3, 5], 0, 2],  # targets-aware, no ctx
+            [[6, 12, 20], [1, 2, 4], 3, 4],  # ctx + targets + UIH cap
+            [[6, 8], [1, 2], 2, 0],  # tail=0 drops all UIH
+        ]
+    )
+    def test_matches_reference(self, lengths, targets, ctx, tail) -> None:
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor(lengths, dtype=torch.int64)
+        )
+        x = torch.randn(int(offsets[-1].item()), 4)
+        num_targets = (
+            torch.tensor(targets, dtype=torch.int64) if targets is not None else None
+        )
+        ref_x, ref_lens = reference_stu_truncation(x, offsets, targets, tail, ctx)
+        plan = compute_stu_truncation_plan(
+            x_offsets=offsets,
+            num_targets=num_targets,
+            max_seq_len=int(max(lengths)),
+            truncate_tail_len=tail,
+            contextual_seq_len=ctx,
+        )
+        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
+        torch.testing.assert_close(out_x, ref_x)
+        self.assertEqual(plan.new_lengths.tolist(), ref_lens)
+        self.assertEqual(plan.new_max_seq_len, max(ref_lens))
+        self.assertEqual(
+            plan.new_x_offsets.tolist(),
+            list(itertools.accumulate([0] + ref_lens)),
+        )
+
+    def test_validation_raises_on_negative_params(self) -> None:
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor([6], dtype=torch.int64)
+        )
+        with self.assertRaisesRegex(ValueError, "truncate_tail_len"):
+            compute_stu_truncation_plan(
+                x_offsets=offsets,
+                num_targets=None,
+                max_seq_len=6,
+                truncate_tail_len=-1,
+            )
+        with self.assertRaisesRegex(ValueError, "contextual_seq_len"):
+            compute_stu_truncation_plan(
+                x_offsets=offsets,
+                num_targets=None,
+                max_seq_len=6,
+                truncate_tail_len=4,
+                contextual_seq_len=-1,
+            )
+
+    def test_replay_on_parallel_jagged(self) -> None:
+        """A single plan can be applied to multiple parallel jagged tensors.
+
+        Use case: ``HSTUTransducer.forward`` reuses the plan from
+        ``STUStack.forward`` to truncate ``seq_timestamps`` with the
+        same offsets used on the embeddings.
+        """
+        offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor([8, 12], dtype=torch.int64)
+        )
+        total = int(offsets[-1].item())
+        x = torch.randn(total, 4)
+        # Parallel tensor (D=1): row i holds 7.0 * i, so positional alignment
+        # after truncation is checkable with a simple scalar multiply.
+        ts = torch.arange(total, dtype=torch.float32).mul(7.0).unsqueeze(-1)
+        plan = compute_stu_truncation_plan(
+            x_offsets=offsets,
+            num_targets=torch.tensor([2, 3], dtype=torch.int64),
+            max_seq_len=12,
+            truncate_tail_len=3,
+        )
+        ref_x, _ = reference_stu_truncation(x, offsets, [2, 3], truncate_tail_len=3)
+        ref_ts, _ = reference_stu_truncation(ts, offsets, [2, 3], truncate_tail_len=3)
+        out_x = apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
+        out_ts = apply_stu_truncation_plan(ts, plan, kernel=Kernel.PYTORCH)
+        torch.testing.assert_close(out_x, ref_x)
+        torch.testing.assert_close(out_ts, ref_ts)
 
 
 if __name__ == "__main__":
