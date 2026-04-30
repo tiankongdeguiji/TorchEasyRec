@@ -76,16 +76,12 @@ message DlrmHSTU {
 }
 
 message UltraHSTU {
-    // ULTRA-HSTU model with Mixture of Transducers.  Holds one HSTU
-    // sub-config per channel; per-candidate outputs are concatenated
-    // along the embedding dim.  When `hstu` has a single entry the
-    // model behaves like DlrmHSTU (modulo the optional name routing on
-    // the channel).  When `hstu` has >= 2 entries every channel must
-    // set a unique non-empty `name`, and the corresponding feature
-    // groups (uih-side replaced by `<name>`, `<name>_action`,
-    // `<name>_watchtime`, `<name>_timestamp`) must be defined.  The
-    // candidate-side and contextual feature groups are shared across
-    // every channel.
+    // Mixture of Transducers: one HSTU per channel; per-candidate
+    // outputs are concatenated on the embedding dim.  >= 2 entries
+    // requires every entry to set a unique non-empty `name` plus the
+    // matching `<name>` / `<name>_action` / `<name>_watchtime` /
+    // `<name>_timestamp` feature_groups.  Candidate-side and
+    // contextual groups are shared across all channels.
     repeated HSTU hstu = 1;
     // multi task tower config
     required FusionMTLTower fusion_mtl_tower = 2;

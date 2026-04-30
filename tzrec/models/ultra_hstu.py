@@ -1,4 +1,4 @@
-# Copyright (c) 2025, Alibaba Group;
+# Copyright (c) 2026, Alibaba Group;
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -26,12 +26,8 @@ from tzrec.utils.config_util import config_to_kwargs
 class _HSTUTransducerStack(torch.nn.Module):
     """N parallel HSTUTransducers; concat per-candidate outputs on dim=-1.
 
-    Each sub-transducer reads its own UIH-side feature groups via the
-    name-based key routing in ContextualInterleavePreprocessor and
-    shares the candidate-side and contextual feature groups. The
-    forward signature mirrors HSTUTransducer so that the parent
-    DlrmHSTU.predict() call site treats this stack identically to a
-    single transducer.
+    Forward signature mirrors HSTUTransducer so DlrmHSTU.predict()
+    treats this stack identically to a single transducer.
     """
 
     def __init__(self, transducers: List[HSTUTransducer]) -> None:
@@ -51,21 +47,14 @@ class _HSTUTransducerStack(torch.nn.Module):
 class UltraHSTU(DlrmHSTU):
     """ULTRA-HSTU model with Mixture of Transducers.
 
-    Behaves like DlrmHSTU but builds N parallel HSTUTransducer stacks
-    (one per channel listed in ``model_config.ultra_hstu.hstu``) and
-    concatenates their per-candidate outputs along the embedding dim.
-    The candidate-side feature group (``candidate``) and the contextual
-    group are shared across all channels; the UIH-side groups for each
-    channel are named after that channel (e.g. for ``name="uih_click"``
-    the embedding group dict provides ``uih_click.sequence``,
-    ``uih_click_action.sequence``, ``uih_click_watchtime.sequence``
-    and ``uih_click_timestamp.sequence``).
-
-    Embedding tables are typically shared across channels: when the
-    per-channel feature_groups reference physical features with the
-    same ``embedding_name``, ``EmbeddingGroup`` dedupes them to a
-    single underlying table.  Reserve per-channel ``embedding_name``
-    for the unusual case where you specifically want disjoint tables.
+    Builds N parallel HSTUTransducer stacks (one per channel in
+    ``model_config.ultra_hstu.hstu``) and concatenates their
+    per-candidate outputs along the embedding dim.  The ``candidate``
+    and contextual groups are shared; each channel's UIH-side groups
+    are named after the channel (``<name>``, ``<name>_action``,
+    ``<name>_watchtime``, ``<name>_timestamp``).  Channels with the
+    same ``embedding_name`` on a feature share the underlying table
+    via ``EmbeddingGroup`` dedupe.
 
     Args:
         model_config (ModelConfig): an instance of ModelConfig.

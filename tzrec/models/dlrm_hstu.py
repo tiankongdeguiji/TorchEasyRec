@@ -105,12 +105,7 @@ class DlrmHSTU(RankModel):
         self._init()
 
     def _init(self) -> None:
-        """Build the embedding group, transducer, item MLP, and tower.
-
-        Subclasses (e.g. UltraHSTU) override ``__init__`` with their own
-        model-type assertion and then call this helper, reusing the same
-        post-assert init body.
-        """
+        """Post-model-type-assert init; reused by UltraHSTU subclass."""
         set_static_max_seq_lens([self._model_config.max_seq_len])
 
         self.init_input()
@@ -178,11 +173,7 @@ class DlrmHSTU(RankModel):
     def _build_transducer(
         self, contextual_feature_dim: int, max_contextual_seq_len: int
     ) -> torch.nn.Module:
-        """Build the HSTU transducer module.
-
-        Override in subclasses (e.g. UltraHSTU) to construct alternative
-        transducer wrappers such as a stack of MoT channels.
-        """
+        """Subclass hook: build the HSTU transducer (or a MoT stack)."""
         return HSTUTransducer(
             uih_embedding_dim=self.embedding_group.group_total_dim("uih"),
             target_embedding_dim=self.embedding_group.group_total_dim("candidate"),
@@ -195,11 +186,7 @@ class DlrmHSTU(RankModel):
         )
 
     def _stu_embedding_dim(self) -> int:
-        """Embedding dim feeding the item MLP and the multi-task tower.
-
-        Override in subclasses whose transducer output is not a single
-        STU embedding (e.g. UltraHSTU concatenates per-channel outputs).
-        """
+        """Subclass hook: dim feeding the item MLP and multi-task tower."""
         return self._model_config.hstu.stu.embedding_dim
 
     def predict(self, batch: Batch) -> Dict[str, torch.Tensor]:

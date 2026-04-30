@@ -438,19 +438,10 @@ class STULayer(STU):
 
     @property
     def attn_func_static_sig(self) -> str:
-        """Static portion of this layer's SLA NFUNC cache key.
-
-        Encodes ``(sla_k1, sla_k2, contextual_seq_len, num_heads,
-        target_aware)`` as a comma-separated string.  All fields are
-        init-time constants, so the value is a pure Python str with
-        no Proxy entries -- equality comparisons against another
-        layer's sig are fx-trace-safe.  ``STUStack`` precomputes a
-        per-layer ``prev_attn_func_sig`` from these and threads them
-        into ``forward``.
-        """
+        """SLA NFUNC cache key (colon-separated, fx-trace-safe)."""
         return (
-            f"{self._sla_k1},{self._sla_k2},{self._contextual_seq_len},"
-            f"{self._num_heads},{int(self._target_aware)}"
+            f"{self._sla_k1}:{self._sla_k2}:{self._contextual_seq_len}:"
+            f"{self._num_heads}:{int(self._target_aware)}"
         )
 
     def forward(
@@ -494,9 +485,8 @@ class STULayer(STU):
                     "SLA (sla_k1 / sla_k2 > 0) requires Kernel.CUTLASS or "
                     "Kernel.PYTORCH; Kernel.TRITON has no NFUNC mask path."
                 )
-            # Pure-int / bool tuple equality; fx-trace-safe.
-            # Cache invalidation across mid-stack truncation is encoded
-            # by the caller passing prev_attn_func_sig=None.
+            # str==str, fx-trace-safe. Truncation-boundary invalidation
+            # is encoded by the caller passing prev_attn_func_sig=None.
             if (
                 prev_attn_func is not None
                 and prev_attn_func_sig == self.attn_func_static_sig
@@ -701,16 +691,9 @@ class STUStack(BaseModule):
         self._truncate_split_layer: int = truncate_split_layer
         self._truncate_tail_len: int = truncate_tail_len
 
-        # Precompute each layer's prev_attn_func_sig once at construction.
-        # For layer i:
-        #   - i == 0: no prev layer -> None.
-        #   - i == truncate_split_layer (truncation enabled): the prev
-        #     layer's func tensor was built on a tensor with a different
-        #     total_q -> invalidate via None.
-        #   - otherwise: the previous layer's static sig string.
-        # Baking both special cases into one list keeps forward's loop
-        # body free of any sig bookkeeping and lets fx see a constant
-        # lookup at trace time.
+        # Per-layer prev_attn_func_sig: previous layer's static sig,
+        # except None at layer 0 and at the truncation-split layer
+        # (cache invalidation -- post-truncation total_q differs).
         self._prev_attn_func_sig_per_layer: List[Optional[str]] = []
         for i in range(len(self._stu_layers)):
             if i == 0 or (
@@ -761,10 +744,8 @@ class STUStack(BaseModule):
                     num_targets,
                     truncate_tail_len=self._truncate_tail_len,
                 )
-                # The precomputed prev_attn_func_sig at this index is
-                # already None, so the layer's cache check fails and it
-                # rebuilds with the post-truncation total_q.  No manual
-                # `prev_attn_func = None` reset is needed.
+                # No `prev_attn_func = None` reset: the precomputed sig
+                # at this index is already None, so the layer rebuilds.
             x, prev_attn_func = layer(
                 x=x,
                 x_offsets=x_offsets,

@@ -294,20 +294,13 @@ message HSTU {
     optional uint32 attn_truncation_split_layer = 7;
     // Trailing UIH cap; both fields must be > 0 to enable truncation.
     optional uint32 attn_truncation_tail_len = 8;
-    // Mixture-of-Transducers channel name. When non-empty the channel
-    // name *replaces* the default `uih` prefix on UIH-side keys read
-    // from grouped_features (e.g. name="uih_click" -> reads
-    // uih_click.sequence, uih_click_action.sequence,
+    // MoT channel name.  When non-empty, replaces the default `uih`
+    // prefix on UIH-side keys read from grouped_features (e.g.
+    // name="uih_click" -> uih_click.sequence, uih_click_action.sequence,
     // uih_click_watchtime.sequence, uih_click_timestamp.sequence).
-    // Empty/unset preserves the default uih.sequence,
-    // uih_action.sequence, etc. so DlrmHSTU behavior is unchanged.
-    //
-    // Channels typically share embedding tables: when the per-channel
-    // feature_groups reference the same physical feature with the same
-    // `embedding_name`, EmbeddingGroup dedupes them to a single
-    // underlying table.  Reserve per-channel `embedding_name` for the
-    // unusual case where you specifically want disjoint tables (it
-    // multiplies sparse-parameter count, TBE forward/backward work,
-    // and all-to-all volume by the channel count).
+    // Empty preserves the original uih.* keys (DlrmHSTU behavior).
+    // Channels with the same `embedding_name` on a feature share the
+    // underlying embedding table via EmbeddingGroup dedupe; per-channel
+    // tables multiply sparse-param + TBE + all-to-all cost by N.
     optional string name = 9 [default = ""];
 }

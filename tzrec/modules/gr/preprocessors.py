@@ -121,14 +121,10 @@ class ContextualInterleavePreprocessor(InputPreprocessor):
         max_contextual_seq_len (int): contextual feature num.
         enable_interleaving (bool): enable interleaving target or not.
         is_inference (bool): whether to run in inference mode.
-        name (str): MoT channel name. When non-empty the channel name
-            replaces the default ``uih`` prefix on UIH-side keys read
-            from ``grouped_features`` (e.g. ``name="uih_click"`` reads
-            ``uih_click.sequence``, ``uih_click_action.sequence``,
-            ``uih_click_watchtime.sequence``,
-            ``uih_click_timestamp.sequence``). Empty (default)
-            preserves the original ``uih.sequence``,
-            ``uih_action.sequence``, etc. lookups.
+        name (str): MoT channel name; when non-empty, replaces the
+            ``uih`` prefix on UIH-side keys read from
+            ``grouped_features``.  Empty (default) preserves the
+            original ``uih.*`` lookups.
     """
 
     def __init__(

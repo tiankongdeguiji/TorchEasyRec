@@ -67,10 +67,8 @@ class HSTUTransducer(BaseModule):
             on layers ``>= N1``.  Both ``attn_truncation_split_layer`` and
             ``attn_truncation_tail_len`` must be ``> 0`` to enable
             truncation; setting only one is rejected at construction.
-        name (str): MoT channel name. Forwarded to the input preprocessor;
-            when non-empty the channel name replaces the default ``uih``
-            prefix on UIH-side keys read from ``grouped_features``. Empty
-            (default) preserves the single-channel ``uih.*`` lookups.
+        name (str): MoT channel name; forwarded to the input
+            preprocessor (replaces the ``uih`` prefix on UIH-side keys).
     """
 
     def __init__(
@@ -270,14 +268,10 @@ class HSTUTransducer(BaseModule):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
         """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata.
 
-        When ``plan is None``, returns inputs unchanged. When ``plan is not
-        None``, returns post-truncation ``(seq_timestamps, plan.new_lengths,
-        post_stu_seq_offsets, post_stu_max_seq_len, post_truncation_total_uih_len)``.
-        ``post_truncation_total_uih_len`` is derived from the plan's
-        precomputed ``total_kept`` (UIH + targets, contextual-stripped)
-        minus ``total_targets`` so the caller's ``split_2D_jagged``
-        receives a static int and avoids the ``.item()`` path inside the
-        triton fake-impl during fx / AOT export.
+        ``plan is None`` -> inputs unchanged.  Otherwise returns the
+        post-truncation tuple; ``post_truncation_total_uih_len`` =
+        ``plan.total_kept - total_targets`` (a static int, so the
+        downstream ``split_2D_jagged`` skips its ``.item()`` fallback).
         """
         if plan is None:
             return (

@@ -79,22 +79,14 @@ def build_sla_func_tensor(
         )
     if device is None:
         device = seq_offsets.device
-    # Callers (STUStack, STULayer) already supply int32 offsets from
-    # fbgemm's cumsum, so this is a no-op on the fast path.  Use an
-    # unconditional cast (vs. an `if .dtype != int32` guard) so fx
-    # symbolic tracing during `tzrec.export` doesn't try to evaluate
-    # `Proxy.dtype` as a Python bool.
+    # Unconditional cast: avoids fx tracing `Proxy.dtype != int32` as a
+    # Python bool; no-op on the fast path (callers pass int32).
     seq_offsets_i32 = seq_offsets.to(torch.int32)
     effective_k2 = max(sla_k2, contextual_seq_len)
 
-    # Map each jagged position to its batch element and local position.
-    # Use ``torch.diff`` + ``repeat_interleave(arange(B), seq_lengths)``
-    # rather than the more direct ``searchsorted(seq_offsets[1:], pos)``:
-    # the slice ``[1:]`` produces a SliceView IR node in Inductor and
-    # the searchsorted boundaries lowering then crashes on
-    # ``SliceView.get_stride()`` (NotImplementedError) during AOT
-    # compile.  ``torch.diff`` returns a freshly-allocated tensor so
-    # downstream consumers see a Buffer.
+    # diff + repeat_interleave (not searchsorted on a slice): the slice
+    # `seq_offsets[1:]` produces a SliceView that crashes Inductor's
+    # searchsorted boundaries lowering during AOT compile.
     seq_lengths = torch.diff(seq_offsets_i32)  # (B,)
     B = seq_lengths.size(0)
     pos_global = torch.arange(total_q, device=device, dtype=torch.int32)
@@ -146,20 +138,17 @@ class STUTruncationPlan:
         offsets_tail: post-truncation offsets into the contextual-stripped
             subsequence; equals ``new_x_offsets`` when
             ``contextual_seq_len == 0``.
-        total_dropped: scalar int total of ``offsets_head[-1]``;
-            precomputed so consumers can pass it as ``total_len_left``
-            to ``split_2D_jagged`` and avoid a ``.item()`` call inside
-            the triton fake-impl during fx / AOT export.
-        total_kept: scalar int total of ``offsets_tail[-1]``
-            (post-truncation tokens, contextual-stripped).
+        total_dropped: ``offsets_head[-1]`` as a static int; passed
+            to ``split_2D_jagged`` as ``total_len_left`` to skip its
+            ``.item()`` fallback under fx / AOT export.
+        total_kept: ``offsets_tail[-1]`` as a static int.
         offsets_prefix: contextual-prefix cumulative offsets ``(B+1,)``;
             only set when ``contextual_seq_len > 0``.
         offsets_rest: post-prefix cumulative offsets ``(B+1,)``;
             only set when ``contextual_seq_len > 0``.
-        total_prefix: scalar int = ``B * contextual_seq_len`` when
-            ``contextual_seq_len > 0`` else 0.
-        total_rest: scalar int total of ``offsets_rest[-1]`` when
-            ``contextual_seq_len > 0`` else 0.
+        total_prefix: ``B * contextual_seq_len`` (0 when no contextual).
+        total_rest: ``offsets_rest[-1]`` as a static int (0 when no
+            contextual).
     """
 
     new_lengths: torch.Tensor
@@ -234,12 +223,9 @@ def compute_stu_truncation_plan(
     offsets_head = torch.ops.fbgemm.asynchronous_complete_cumsum(drop_count)
     offsets_tail = torch.ops.fbgemm.asynchronous_complete_cumsum(rest_tail_lengths)
     B_static = seq_lengths.size(0)
-    # fx_int_item is `@torch.fx.wrap`-ed so fx symbolic tracing emits a
-    # call_function node instead of evaluating `int(.item())` statically
-    # (which would raise `int(Proxy)`).  Same trick is needed for the
-    # offset totals so apply_stu_truncation_plan can pass them as
-    # `total_len_left/right` into split_2D_jagged and skip the
-    # `.item()` fallback inside the triton fake impl.
+    # fx_int_item is fx-wrapped: emits a call_function node instead of
+    # `int(Proxy)`. The totals feed split_2D_jagged so it skips its
+    # `.item()` fallback (would fail under FakeTensor / AOT export).
     total_dropped = fx_int_item(offsets_head[-1])
     total_kept = fx_int_item(offsets_tail[-1])
     if contextual_seq_len > 0:
@@ -301,9 +287,8 @@ def apply_stu_truncation_plan(
         offsets_prefix = plan.offsets_prefix
         offsets_rest = plan.offsets_rest
         assert offsets_prefix is not None and offsets_rest is not None
-        # Pass precomputed total_len_{left,right} so split_2D_jagged's
-        # triton path doesn't need to call `.item()` on the offsets
-        # tensors (which fails under FakeTensor / AOT export).
+        # total_len_{left,right} from plan: skips split_2D_jagged's
+        # triton `.item()` fallback (fails under FakeTensor / AOT).
         x_prefix, x_rest = split_2D_jagged(
             values=x,
             max_seq_len=pre_max,
