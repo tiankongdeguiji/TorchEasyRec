@@ -158,12 +158,19 @@ def export_model_aot(
             dynamic_shapes=(dynamic_shapes,),
         )
     # AsserScalar codegen is not correct.
-    with torch._inductor.config.patch(
-        {
-            "scalar_asserts": False,
-            "unsafe_ignore_unsupported_triton_autotune_args": True,
-        }
-    ):
+    aoti_compile_cfg = {
+        "scalar_asserts": False,
+        "unsafe_ignore_unsupported_triton_autotune_args": True,
+    }
+    # Heuristic-picked triton block sizes are poor on newer SM families (e.g.
+    # sm_120 Blackwell). Setting max_autotune forces exhaustive search per
+    # kernel; gate by env var because exhaustive autotune is much slower at
+    # export time.
+    if os.environ.get("TZREC_MAX_AUTOTUNE", "0").lower() in ("1", "true", "yes"):
+        aoti_compile_cfg["max_autotune"] = True
+        aoti_compile_cfg["max_autotune_gemm"] = True
+        aoti_compile_cfg["coordinate_descent_tuning"] = True
+    with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
 
@@ -432,12 +439,15 @@ def export_unified_model_aot(
 
     # Compile with AOTI
     logger.info("compiling unified model with AOTI...")
-    with torch._inductor.config.patch(
-        {
-            "scalar_asserts": False,
-            "unsafe_ignore_unsupported_triton_autotune_args": True,
-        }
-    ):
+    aoti_compile_cfg = {
+        "scalar_asserts": False,
+        "unsafe_ignore_unsupported_triton_autotune_args": True,
+    }
+    if os.environ.get("TZREC_MAX_AUTOTUNE", "0").lower() in ("1", "true", "yes"):
+        aoti_compile_cfg["max_autotune"] = True
+        aoti_compile_cfg["max_autotune_gemm"] = True
+        aoti_compile_cfg["coordinate_descent_tuning"] = True
+    with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
 
