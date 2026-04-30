@@ -241,46 +241,23 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
             ),
         ]
 
-        # Extra configs targeted at Blackwell sm_120 — larger blocks with
-        # num_warps=16 to exploit the wider SM scheduling, plus BLOCK_M=256
-        # rows to increase Q-side arithmetic intensity. Autotune at AOTI
-        # compile time will only pick one of these if it actually wins on the
-        # benchmark; otherwise this is a no-op for older SMs.
+        # Extra configs targeted at Blackwell sm_120 — three-stage variants of
+        # the existing best (BLOCK_M=128, BLOCK_N=64, num_stages=4, num_warps=8)
+        # plus a num_stages=3 of the BLOCK_M=128 BLOCK_N=128 case. Triton
+        # 3.6 has problems with num_warps=16 on sm_120, and BLOCK_M=256
+        # exceeds available shared memory once Q+K+V is staged, so these are
+        # the safe additions worth letting the compile-time autotune try.
         configs += [
             triton.Config(
                 {"BLOCK_M": 128, "BLOCK_N": 64},
-                num_stages=2,
-                num_warps=16,
-                pre_hook=_host_descriptor_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 128, "BLOCK_N": 128},
-                num_stages=2,
-                num_warps=16,
+                num_stages=3,
+                num_warps=8,
                 pre_hook=_host_descriptor_pre_hook,
             ),
             triton.Config(
                 {"BLOCK_M": 128, "BLOCK_N": 128},
                 num_stages=3,
                 num_warps=8,
-                pre_hook=_host_descriptor_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 256, "BLOCK_N": 64},
-                num_stages=2,
-                num_warps=8,
-                pre_hook=_host_descriptor_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 256, "BLOCK_N": 64},
-                num_stages=2,
-                num_warps=16,
-                pre_hook=_host_descriptor_pre_hook,
-            ),
-            triton.Config(
-                {"BLOCK_M": 64, "BLOCK_N": 64},
-                num_stages=2,
-                num_warps=16,
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
