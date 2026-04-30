@@ -436,6 +436,22 @@ def export_unified_model_aot(
         {
             "scalar_asserts": False,
             "unsafe_ignore_unsupported_triton_autotune_args": True,
+            # Force fp32 for Python-float scalar Triton kernel args (e.g.
+            # ``_hstu_attn_fwd``'s ``alpha``). The default open-source
+            # value is True, which infers fp64 for Python floats and
+            # triggers a register-spilling fp64 specialization that runs
+            # ~4× slower on Ampere/Ada. The two-stage path goes through
+            # a Dynamo trace that ends up classifying ``alpha`` as a
+            # tensor (taking the fp32 path of ``signature_of``); unified
+            # threads the float through ``fx.symbolic_trace`` first and
+            # lands on the SizeArg fp32/fp64 fork in ``triton_utils.py``.
+            "_use_fp64_for_unbacked_floats": False,
+            # Enable cudagraphs at AOTI compile time. The unified graph
+            # ships ~280 kernel launches per call; with cudagraphs the
+            # whole sequence collapses into one graph replay, eliminating
+            # CPU dispatch overhead and the per-launch ~3-5 µs gap.
+            "triton.cudagraphs": True,
+            "triton.cudagraph_skip_dynamic_graphs": False,
         }
     ):
         aoti_dir = os.path.join(save_dir, "aoti")
