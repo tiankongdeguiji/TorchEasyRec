@@ -438,7 +438,8 @@ class STULayer(STU):
         """SLA NFUNC cache key (colon-separated, fx-trace-safe)."""
         return (
             f"{self._sla_k1}:{self._sla_k2}:{self._contextual_seq_len}:"
-            f"{self._num_heads}:{int(self._target_aware)}"
+            f"{self._num_heads}:{int(self._target_aware)}:"
+            f"{self._max_attn_len}:{int(self._causal)}"
         )
 
     def forward(
