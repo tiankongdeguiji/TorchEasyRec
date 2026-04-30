@@ -148,33 +148,9 @@ model_config {
 
 只要多个通道在同一物理特征上声明同名 `embedding_name`，`EmbeddingGroup` 就会 dedupe 成一张表（详见 `tzrec/modules/embedding.py:EmbeddingGroup._add_embedding_config`）。**默认应当共享**；只在需要每通道独立 embedding 表的特殊场景才使用每通道独立的 `embedding_name`，否则 sparse 参数量、TBE forward/backward 计算量和 all-to-all 通信量都会按通道数线性放大。
 
-## 示例
-
-模型的训练和评估方式同[local_tutorial](../quick_start/local_tutorial.md)，以 kuairand-27k 为例的数据和配置如下：
-
-### 数据
-
-[kuairand-27k.tar.gz](https://tzrec.oss-cn-beijing.aliyuncs.com/data/models/kuairand-27k.tar.gz)
-
-### 配置文件
+## 示例Config
 
 [ultra_hstu_kuairand.config](https://tzrec.oss-cn-beijing.aliyuncs.com/config/models/ultra_hstu_kuairand.config)
-注: 如遇到训练不稳定问题，可优先考虑调整混合精度相关的配置: 去除train_config中的mixed_precision，去除feature_configs中的data_type，设置train_config.cuda_matmul_allow_tf32=true
-
-### 模型导出
-
-UltraHSTU 与 DlrmHSTU 共享 predict 路径，导出方式同 DlrmHSTU：通过命令行参数 `--additional_export_config` 传入一个 JSON，其中 `cand_seq_pk` 指定 candidate 序列特征的名称（即 `sequence_feature.sequence_name`，例如 `cand_seq`）。该 JSON 的内容会被合并写入 `model_acc.json` 供在线推理使用。
-
-例如:
-
-```
-torchrun --master_addr=localhost --master_port=32555 \
-    --nnodes=1 --nproc-per-node=1 --node_rank=0 \
-    -m tzrec.export \
-    --pipeline_config_path experiments/ultra_hstu/pipeline.config \
-    --additional_export_config '{"cand_seq_pk": "cand_seq"}' \
-    --export_dir experiments/ultra_hstu/export
-```
 
 ## 参考论文
 
