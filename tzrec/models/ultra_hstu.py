@@ -61,6 +61,12 @@ class UltraHSTU(DlrmHSTU):
     ``uih_click_action.sequence``, ``uih_click_watchtime.sequence``
     and ``uih_click_timestamp.sequence``).
 
+    Embedding tables are typically shared across channels: when the
+    per-channel feature_groups reference physical features with the
+    same ``embedding_name``, ``EmbeddingGroup`` dedupes them to a
+    single underlying table.  Reserve per-channel ``embedding_name``
+    for the unusual case where you specifically want disjoint tables.
+
     Args:
         model_config (ModelConfig): an instance of ModelConfig.
         features (list): list of features.
