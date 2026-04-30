@@ -11,17 +11,8 @@
 
 """Unit tests for ``tzrec.ops.hstu_attention_utils``.
 
-These tests exercise the helper functions in isolation (CPU only), so
-every CI lane has direct coverage of the NFUNC mask construction without
-depending on the GPU attention kernels.
-
-Each numerical-correctness test is parametrized over
-``TestGraphType.NORMAL`` and ``TestGraphType.FX_TRACE`` so the same
-assertions pin both the eager output values *and* the fx-traceability of
-the helper functions.  A regression that re-introduces a Proxy-unfriendly
-construct (e.g. ``Proxy.dtype`` checks, ``int(.item())``, ``[1:]`` slice
-into searchsorted) trips the FX_TRACE case before the heavyweight
-integration test does.
+Numerical-correctness tests are parametrized over
+``TestGraphType.NORMAL`` and ``TestGraphType.FX_TRACE``.
 """
 
 import itertools
