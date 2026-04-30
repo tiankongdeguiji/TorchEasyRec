@@ -55,14 +55,6 @@ def _xprod(cases):
 
 
 class _BuildSlaFuncTensorWrapper(nn.Module):
-    """Wraps ``build_sla_func_tensor`` so it can be fx-symbolic-traced.
-
-    Mirrors the call pattern in ``STULayer.forward``: ``total_q`` is
-    derived from the input tensor's own size, so under fx tracing it
-    becomes a Proxy -- exactly the case that the
-    ``hstu_attention_utils.py`` Proxy fixes are guarding against.
-    """
-
     def __init__(
         self,
         sla_k1: int,
@@ -96,23 +88,6 @@ class _BuildSlaFuncTensorWrapper(nn.Module):
 
 
 class _StuTruncationWrapper(nn.Module):
-    """Wraps compute+apply truncation so the pair can be fx-symbolic-traced.
-
-    Mirrors the call pattern inside ``STUStack``: the plan is built
-    once per forward and immediately consumed by
-    ``apply_stu_truncation_plan``.  Under fx tracing all the
-    ``int(...item())`` conversions and the triton ``split_2D_jagged``
-    totals must take their static-int fast paths -- this catches any
-    regression there.
-
-    ``target_aware`` is a static (init-time) flag that controls whether
-    ``num_targets`` is forwarded to ``compute_stu_truncation_plan`` or
-    forced to ``None``.  Under fx tracing the trace specializes to the
-    selected branch of ``if num_targets is not None`` based on this
-    flag (a Proxy ``num_targets`` would otherwise always trace the
-    not-None branch and break callers that pass ``None`` at run time).
-    """
-
     def __init__(
         self,
         truncate_tail_len: int,
@@ -143,11 +118,6 @@ class _StuTruncationWrapper(nn.Module):
 
 
 class _ReplayTruncationWrapper(nn.Module):
-    """Wraps a single plan applied to two parallel jagged tensors.
-
-    ``target_aware`` plays the same role as in ``_StuTruncationWrapper``.
-    """
-
     def __init__(
         self,
         truncate_tail_len: int,
