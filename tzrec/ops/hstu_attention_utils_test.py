@@ -18,9 +18,11 @@ depending on the GPU attention kernels.
 
 import itertools
 import unittest
+from typing import Optional
 
 import torch
 from parameterized import parameterized
+from torch import nn
 
 from tzrec.ops import Kernel
 from tzrec.ops.hstu_attention_utils import (
@@ -28,7 +30,11 @@ from tzrec.ops.hstu_attention_utils import (
     build_sla_func_tensor,
     compute_stu_truncation_plan,
 )
-from tzrec.utils.test_util import reference_stu_truncation
+from tzrec.utils.test_util import (
+    TestGraphType,
+    create_test_module,
+    reference_stu_truncation,
+)
 
 
 class BuildSlaFuncTensorTest(unittest.TestCase):
@@ -233,6 +239,159 @@ class StuTruncationTest(unittest.TestCase):
         out_ts = apply_stu_truncation_plan(ts, plan, kernel=Kernel.PYTORCH)
         torch.testing.assert_close(out_x, ref_x)
         torch.testing.assert_close(out_ts, ref_ts)
+
+
+class _BuildSlaFuncTensorWrapper(nn.Module):
+    """Wraps ``build_sla_func_tensor`` so it can be fx-symbolic-traced.
+
+    Mirrors the call pattern in ``STULayer.forward``: ``total_q`` is
+    derived from the input tensor's own size, so under fx tracing it
+    becomes a Proxy -- exactly the case that the
+    ``hstu_attention_utils.py`` Proxy fixes are guarding against.
+    """
+
+    def __init__(
+        self,
+        sla_k1: int,
+        sla_k2: int,
+        contextual_seq_len: int = 0,
+        nheads: int = 2,
+        target_aware: bool = False,
+    ) -> None:
+        super().__init__()
+        self._sla_k1 = sla_k1
+        self._sla_k2 = sla_k2
+        self._contextual_seq_len = contextual_seq_len
+        self._nheads = nheads
+        self._target_aware = target_aware
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        seq_offsets: torch.Tensor,
+        num_targets: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return build_sla_func_tensor(
+            nheads=self._nheads,
+            sla_k1=self._sla_k1,
+            sla_k2=self._sla_k2,
+            seq_offsets=seq_offsets,
+            total_q=x.size(0),
+            num_targets=num_targets if self._target_aware else None,
+            contextual_seq_len=self._contextual_seq_len,
+        )
+
+
+class BuildSlaFuncTensorTraceTest(unittest.TestCase):
+    """Verify ``build_sla_func_tensor`` lowers cleanly under fx tracing.
+
+    Regression coverage for the SLA path under ``tzrec.export``'s fx
+    symbolic_trace stage: ``Proxy.dtype`` checks, slice/searchsorted
+    SliceView issues, etc. should all stay handled.  Tracing-failure
+    here would indicate a regression of those fixes.
+    """
+
+    @parameterized.expand(
+        [
+            (TestGraphType.NORMAL,),
+            (TestGraphType.FX_TRACE,),
+        ]
+    )
+    def test_build_sla_func_tensor(self, graph_type: TestGraphType) -> None:
+        seq_lengths = [3, 5]
+        seq_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor(seq_lengths, dtype=torch.int32)
+        )
+        num_targets = torch.tensor([1, 2], dtype=torch.int32)
+        total_q = int(seq_offsets[-1].item())
+        x = torch.randn(total_q, 4)
+
+        wrapper = _BuildSlaFuncTensorWrapper(
+            sla_k1=4,
+            sla_k2=2,
+            contextual_seq_len=2,
+            nheads=2,
+            target_aware=True,
+        )
+        eager_out = wrapper(x, seq_offsets, num_targets)
+        traced = create_test_module(wrapper, graph_type)
+        traced_out = traced(x, seq_offsets, num_targets)
+        torch.testing.assert_close(traced_out, eager_out)
+
+
+class _StuTruncationWrapper(nn.Module):
+    """Wraps compute+apply truncation so the pair can be fx-symbolic-traced.
+
+    Mirrors the call pattern inside ``STUStack``: the plan is built
+    once per forward and immediately consumed by
+    ``apply_stu_truncation_plan``.  Under fx tracing all the ``int(...
+    .item())`` conversions and the triton ``split_2D_jagged`` totals
+    must take their static-int fast paths -- this test catches any
+    regression there.
+    """
+
+    def __init__(
+        self,
+        truncate_tail_len: int,
+        contextual_seq_len: int = 0,
+        max_seq_len: int = 32,
+    ) -> None:
+        super().__init__()
+        self._tail = truncate_tail_len
+        self._ctx = contextual_seq_len
+        self._max_seq_len = max_seq_len
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        x_offsets: torch.Tensor,
+        num_targets: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        plan = compute_stu_truncation_plan(
+            x_offsets=x_offsets,
+            num_targets=num_targets,
+            max_seq_len=self._max_seq_len,
+            truncate_tail_len=self._tail,
+            contextual_seq_len=self._ctx,
+        )
+        return apply_stu_truncation_plan(x, plan, kernel=Kernel.PYTORCH)
+
+
+class StuTruncationTraceTest(unittest.TestCase):
+    """Verify the truncation pair lowers cleanly under fx tracing."""
+
+    @parameterized.expand(
+        [
+            # graph_type, truncate_tail_len, contextual_seq_len
+            (TestGraphType.NORMAL, 4, 0),
+            (TestGraphType.FX_TRACE, 4, 0),
+            (TestGraphType.NORMAL, 3, 2),
+            (TestGraphType.FX_TRACE, 3, 2),
+        ]
+    )
+    def test_truncation(
+        self,
+        graph_type: TestGraphType,
+        truncate_tail_len: int,
+        contextual_seq_len: int,
+    ) -> None:
+        lengths = [10, 15]
+        targets = [2, 3]
+        x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor(lengths, dtype=torch.int64)
+        )
+        num_targets = torch.tensor(targets, dtype=torch.int64)
+        x = torch.randn(int(x_offsets[-1].item()), 4)
+
+        wrapper = _StuTruncationWrapper(
+            truncate_tail_len=truncate_tail_len,
+            contextual_seq_len=contextual_seq_len,
+            max_seq_len=max(lengths),
+        )
+        eager_out = wrapper(x, x_offsets, num_targets)
+        traced = create_test_module(wrapper, graph_type)
+        traced_out = traced(x, x_offsets, num_targets)
+        torch.testing.assert_close(traced_out, eager_out)
 
 
 if __name__ == "__main__":
