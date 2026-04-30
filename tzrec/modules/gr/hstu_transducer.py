@@ -262,18 +262,22 @@ class HSTUTransducer(BaseModule):
         seq_offsets: torch.Tensor,
         max_seq_len: int,
         total_uih_len: int,
+        total_targets: int,
         post_stu_seq_offsets: torch.Tensor,
         post_stu_max_seq_len: int,
         plan: Optional[STUTruncationPlan],
         kernel: Kernel,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[int]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
         """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata.
 
         When ``plan is None``, returns inputs unchanged. When ``plan is not
         None``, returns post-truncation ``(seq_timestamps, plan.new_lengths,
-        post_stu_seq_offsets, post_stu_max_seq_len, None)`` -- the trailing
-        ``None`` replaces ``total_uih_len`` so the caller's
-        ``split_2D_jagged`` can re-derive it from the truncated offsets.
+        post_stu_seq_offsets, post_stu_max_seq_len, post_truncation_total_uih_len)``.
+        ``post_truncation_total_uih_len`` is derived from the plan's
+        precomputed ``total_kept`` (UIH + targets, contextual-stripped)
+        minus ``total_targets`` so the caller's ``split_2D_jagged``
+        receives a static int and avoids the ``.item()`` path inside the
+        triton fake-impl during fx / AOT export.
         """
         if plan is None:
             return (
@@ -291,7 +295,7 @@ class HSTUTransducer(BaseModule):
             plan.new_lengths,
             post_stu_seq_offsets,
             post_stu_max_seq_len,
-            None,
+            plan.total_kept - total_targets,
         )
 
     def forward(
@@ -349,6 +353,7 @@ class HSTUTransducer(BaseModule):
             seq_offsets=seq_offsets,
             max_seq_len=max_seq_len,
             total_uih_len=total_uih_len,
+            total_targets=total_targets,
             post_stu_seq_offsets=post_stu_seq_offsets,
             post_stu_max_seq_len=post_stu_max_seq_len,
             plan=plan,

@@ -326,7 +326,6 @@ class UltraHSTUTest(unittest.TestCase):
         if self.test_dir is not None and os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
 
-    @unittest.skipIf(*gpu_unavailable)
     @parameterized.expand(
         [
             # Single channel exercises the bare-HSTUTransducer return
@@ -341,6 +340,7 @@ class UltraHSTUTest(unittest.TestCase):
             ("multi_hetero", [("a", 256), ("b", 512)]),
         ]
     )
+    @unittest.skipIf(*gpu_unavailable)
     @given(
         graph_type=st.sampled_from(
             [

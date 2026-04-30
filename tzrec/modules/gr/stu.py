@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 
 import torch
 from torch.autograd.profiler import record_function
+from torch.fx._symbolic_trace import is_fx_tracing
 
 from tzrec.modules.utils import BaseModule
 from tzrec.ops import Kernel
@@ -493,7 +494,16 @@ class STULayer(STU):
                 self._target_aware,
                 x.size(0),
             )
-            if my_sig == prev_attn_func_sig and prev_attn_func is not None:
+            # Skip the cache hit-check under fx symbolic tracing: my_sig
+            # contains x.size(0) which is a Proxy at trace time, and
+            # `tuple == tuple` would resolve `Proxy.__eq__` to a bool.
+            # build_sla_func_tensor is called once per layer in the
+            # exported graph; the cache is a runtime-only optimization.
+            if (
+                not is_fx_tracing()
+                and prev_attn_func is not None
+                and my_sig == prev_attn_func_sig
+            ):
                 attn_func = prev_attn_func
             else:
                 attn_func = build_sla_func_tensor(

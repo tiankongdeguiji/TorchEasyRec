@@ -1085,7 +1085,7 @@ class RankIntegrationTest(unittest.TestCase):
         if self.success:
             self.success = utils.test_predict(
                 os.path.join(self.test_dir, "export"),
-                predict_input_path="data/test/kuairand-1k-eval-c4096-s100.parquet",
+                predict_input_path="data/test/kuairand-mot-1k-eval-c4096-s100.parquet",
                 predict_output_path=predict_output_path,
                 reserved_columns="user_id,cand_seq__video_id",
                 output_columns="",
