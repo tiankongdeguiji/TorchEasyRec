@@ -120,10 +120,7 @@ class STU(BaseModule, abc.ABC):
                 (e.g. across a mid-stack truncation boundary).
 
         Returns:
-            Tuple of ``(output, attn_func)``.  The current layer's
-            static sig is exposed via ``self.attn_func_static_sig``;
-            callers (typically ``STUStack``) read it from the layer
-            object rather than receiving it from the return tuple.
+            Tuple of ``(output, attn_func)``.
         """
         pass
 
