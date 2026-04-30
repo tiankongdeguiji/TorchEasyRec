@@ -223,9 +223,7 @@ def compute_stu_truncation_plan(
     offsets_head = torch.ops.fbgemm.asynchronous_complete_cumsum(drop_count)
     offsets_tail = torch.ops.fbgemm.asynchronous_complete_cumsum(rest_tail_lengths)
     B_static = seq_lengths.size(0)
-    # fx_int_item is fx-wrapped: emits a call_function node instead of
-    # `int(Proxy)`. The totals feed split_2D_jagged so it skips its
-    # `.item()` fallback (would fail under FakeTensor / AOT export).
+    # fx_int_item is fx-wrapped to avoid `int(Proxy)` under symbolic trace.
     total_dropped = fx_int_item(offsets_head[-1])
     total_kept = fx_int_item(offsets_tail[-1])
     if contextual_seq_len > 0:
