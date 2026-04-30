@@ -1067,7 +1067,7 @@ class RankIntegrationTest(unittest.TestCase):
     @unittest.skipIf(*gpu_unavailable)
     def test_rank_ultra_hstu_cutlass_train_eval_export(self):
         self.success = utils.test_train_eval(
-            "tzrec/tests/configs/dlrm_ultra_hstu_cutlass_kuairand_1k.config",
+            "tzrec/tests/configs/ultra_hstu_cutlass_kuairand_1k.config",
             self.test_dir,
         )
         if self.success:
