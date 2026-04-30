@@ -240,6 +240,50 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
+
+        # Extra configs targeted at Blackwell sm_120 — larger blocks with
+        # num_warps=16 to exploit the wider SM scheduling, plus BLOCK_M=256
+        # rows to increase Q-side arithmetic intensity. Autotune at AOTI
+        # compile time will only pick one of these if it actually wins on the
+        # benchmark; otherwise this is a no-op for older SMs.
+        configs += [
+            triton.Config(
+                {"BLOCK_M": 128, "BLOCK_N": 64},
+                num_stages=2,
+                num_warps=16,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+            triton.Config(
+                {"BLOCK_M": 128, "BLOCK_N": 128},
+                num_stages=2,
+                num_warps=16,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+            triton.Config(
+                {"BLOCK_M": 128, "BLOCK_N": 128},
+                num_stages=3,
+                num_warps=8,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+            triton.Config(
+                {"BLOCK_M": 256, "BLOCK_N": 64},
+                num_stages=2,
+                num_warps=8,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+            triton.Config(
+                {"BLOCK_M": 256, "BLOCK_N": 64},
+                num_stages=2,
+                num_warps=16,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 64},
+                num_stages=2,
+                num_warps=16,
+                pre_hook=_host_descriptor_pre_hook,
+            ),
+        ]
     return configs
 
 
