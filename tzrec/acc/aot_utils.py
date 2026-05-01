@@ -170,6 +170,15 @@ def export_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
+        # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
+        # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
+        # cost than Ada + cu12), and the inductor-side TMA path
+        # (use_tensor_descriptor) gives PyTorch-emitted triton kernels
+        # access to TMA on sm_90+ (the user-defined HSTU triton kernel
+        # uses its own TMA branch via ENABLE_TMA env, which is separate).
+        aoti_compile_cfg["triton.cudagraphs"] = True
+        aoti_compile_cfg["triton.use_tensor_descriptor"] = True
+        aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
@@ -447,6 +456,15 @@ def export_unified_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
+        # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
+        # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
+        # cost than Ada + cu12), and the inductor-side TMA path
+        # (use_tensor_descriptor) gives PyTorch-emitted triton kernels
+        # access to TMA on sm_90+ (the user-defined HSTU triton kernel
+        # uses its own TMA branch via ENABLE_TMA env, which is separate).
+        aoti_compile_cfg["triton.cudagraphs"] = True
+        aoti_compile_cfg["triton.use_tensor_descriptor"] = True
+        aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
