@@ -170,19 +170,21 @@ def export_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
-        # Blackwell-specific: assume_aligned_inputs lets inductor emit
-        # tighter codegen for triton kernels with aligned tensor inputs.
+        # Blackwell-specific:
+        # - assume_aligned_inputs lets inductor emit tighter codegen for triton
+        #   kernels with aligned tensor inputs.
+        # - triton.cudagraphs reduces per-launch overhead (Blackwell + cu13 has
+        #   53x higher cudaStreamIsCapturing cost than Ada + cu12).
         #
-        # We do NOT enable triton.cudagraphs or triton.use_tensor_descriptor
-        # together with the HSTU model under ENABLE_TMA=1: both paths force
-        # inductor's cpp_wrapper, which has a known bug
-        # ("TypeError: '<=' not supported between TensorDescriptor and int")
-        # on graphs that already carry TensorDescriptor inputs from the
-        # user-defined kernel's TMA branch. The HSTU kernel-internal TMA
-        # (ENABLE_TMA=1) is the bigger lever; cudagraphs / use_tensor_descriptor
-        # would help peripheral inductor-emitted ops but conflict with
-        # the user kernel's TMA path in this triton/inductor combo.
+        # NOTE: triton.cudagraphs cannot be combined with ENABLE_TMA=1 in
+        # PyTorch 2.11 due to multiple inductor bugs (cpp_wrapper does not
+        # support TensorDescriptor kernel args — surfaces as both
+        # "TypeError: '<=' not supported between TensorDescriptor and int"
+        # and "SympifyError: cannot sympify NotImplementedType"). The HSTU
+        # kernel-internal TMA path is unsupported by AOTI in this version.
+        # We keep cudagraphs on for the case ENABLE_TMA=0.
         aoti_compile_cfg["assume_aligned_inputs"] = True
+        aoti_compile_cfg["triton.cudagraphs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
@@ -460,19 +462,21 @@ def export_unified_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
-        # Blackwell-specific: assume_aligned_inputs lets inductor emit
-        # tighter codegen for triton kernels with aligned tensor inputs.
+        # Blackwell-specific:
+        # - assume_aligned_inputs lets inductor emit tighter codegen for triton
+        #   kernels with aligned tensor inputs.
+        # - triton.cudagraphs reduces per-launch overhead (Blackwell + cu13 has
+        #   53x higher cudaStreamIsCapturing cost than Ada + cu12).
         #
-        # We do NOT enable triton.cudagraphs or triton.use_tensor_descriptor
-        # together with the HSTU model under ENABLE_TMA=1: both paths force
-        # inductor's cpp_wrapper, which has a known bug
-        # ("TypeError: '<=' not supported between TensorDescriptor and int")
-        # on graphs that already carry TensorDescriptor inputs from the
-        # user-defined kernel's TMA branch. The HSTU kernel-internal TMA
-        # (ENABLE_TMA=1) is the bigger lever; cudagraphs / use_tensor_descriptor
-        # would help peripheral inductor-emitted ops but conflict with
-        # the user kernel's TMA path in this triton/inductor combo.
+        # NOTE: triton.cudagraphs cannot be combined with ENABLE_TMA=1 in
+        # PyTorch 2.11 due to multiple inductor bugs (cpp_wrapper does not
+        # support TensorDescriptor kernel args — surfaces as both
+        # "TypeError: '<=' not supported between TensorDescriptor and int"
+        # and "SympifyError: cannot sympify NotImplementedType"). The HSTU
+        # kernel-internal TMA path is unsupported by AOTI in this version.
+        # We keep cudagraphs on for the case ENABLE_TMA=0.
         aoti_compile_cfg["assume_aligned_inputs"] = True
+        aoti_compile_cfg["triton.cudagraphs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
         os.makedirs(aoti_dir, exist_ok=True)
