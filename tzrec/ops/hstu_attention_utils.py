@@ -117,22 +117,15 @@ def build_sla_func_tensor(
     seq_offsets_i32 = seq_offsets.to(torch.int32)
     effective_k2 = max(sla_k2, contextual_seq_len)
 
-    # diff + cumsum + searchsorted (not repeat_interleave + arange): on
-    # dynamic shapes, repeat_interleave's Inductor lowering emits
-    # ModularIndexing patterns whose simplifier crashes during AOT codegen.
-    # cumsum gives a fresh contiguous boundaries tensor (not a SliceView,
-    # which was the original `seq_offsets[1:]` failure mode).
-    # ``clamp_max(B - 1)`` is a no-op at eager runtime (pos_global <
-    # boundaries[-1] always) but gives Inductor a provable upper bound for
-    # the downstream ``seq_lengths[batch_ids]`` indirect index.
+    # diff + repeat_interleave (not searchsorted on a slice): the slice
+    # `seq_offsets[1:]` produces a SliceView that crashes Inductor's
+    # searchsorted boundaries lowering during AOT compile.
     seq_lengths = torch.diff(seq_offsets_i32)  # (B,)
     B = seq_lengths.size(0)
     pos_global = torch.arange(total_q, device=device, dtype=torch.int32)
-    boundaries = torch.cumsum(seq_lengths, dim=0).to(torch.int32)  # (B,)
-    batch_ids = (
-        torch.searchsorted(boundaries, pos_global, right=True)
-        .clamp_max(B - 1)
-        .to(torch.int32)
+    batch_ids = torch.repeat_interleave(
+        torch.arange(B, device=device, dtype=torch.int32),
+        seq_lengths,
     )
     pos_local = pos_global - seq_offsets_i32[batch_ids]
     L = seq_lengths[batch_ids]  # per-position sequence length
