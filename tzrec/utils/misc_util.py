@@ -62,10 +62,11 @@ def run_cmd(cmd_str, log_file, env=None, timeout=None):
                 continue
             # Tail-dump to stdout so CI captures the real stack trace;
             # the per-stage tmp/<dir>/log_*.txt is wiped on runner cleanup.
-            tail = "".join(log_content.splitlines(keepends=True)[-200:])
+            tail_lines = 500
+            tail = "".join(log_content.splitlines(keepends=True)[-tail_lines:])
             print(
                 f"RUNCMD FAILED (rc={proc.returncode}): {run_cmd_str}\n"
-                f"--- last 200 lines of {log_file} ---\n"
+                f"--- last {tail_lines} lines of {log_file} ---\n"
                 f"{tail}"
                 f"--- end of {log_file} ---",
                 flush=True,

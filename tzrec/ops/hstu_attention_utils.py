@@ -23,6 +23,19 @@ from tzrec.utils.fx_util import fx_int_item
 torch.fx.wrap(fx_int_item)
 
 
+@torch.fx.wrap
+def _emit_check_total_q_positive(total_q: int) -> None:
+    """Inductor symbolic-shape hint that ``total_q`` is a positive size.
+
+    ``@torch.fx.wrap``'d so fx symbolic_trace emits a call_function node
+    instead of trying to evaluate ``total_q > 0`` on a Proxy.
+    Body is a no-op outside ``torch.compiler.is_compiling()`` (eager run).
+    """
+    if not torch.jit.is_scripting() and torch.compiler.is_compiling():
+        torch._check_is_size(total_q)
+        torch._check(total_q > 0)
+
+
 def build_sla_func_tensor(
     nheads: int,
     sla_k1: int,
@@ -79,20 +92,34 @@ def build_sla_func_tensor(
         )
     if device is None:
         device = seq_offsets.device
+    # Tell the symbolic shape engine total_q is a positive size.  Without
+    # this, Inductor's combine_contiguous_dims for the (nheads, 3, total_q)
+    # output emits ModularIndexing(idx, total_q, 3) whose sympy simplifier
+    # hits a ZeroDivisionError under AOT compile when total_q is dynamic
+    # and not provably > 0.  At runtime the SLA path is only entered when
+    # there are query tokens, so this always holds.
+    _emit_check_total_q_positive(total_q)
     # Unconditional cast: avoids fx tracing `Proxy.dtype != int32` as a
     # Python bool; no-op on the fast path (callers pass int32).
     seq_offsets_i32 = seq_offsets.to(torch.int32)
     effective_k2 = max(sla_k2, contextual_seq_len)
 
-    # diff + repeat_interleave (not searchsorted on a slice): the slice
-    # `seq_offsets[1:]` produces a SliceView that crashes Inductor's
-    # searchsorted boundaries lowering during AOT compile.
+    # diff + cumsum + searchsorted (not repeat_interleave + arange): on
+    # dynamic shapes, repeat_interleave's Inductor lowering emits
+    # ModularIndexing patterns whose simplifier crashes during AOT codegen.
+    # cumsum gives a fresh contiguous boundaries tensor (not a SliceView,
+    # which was the original `seq_offsets[1:]` failure mode).
+    # ``clamp_max(B - 1)`` is a no-op at eager runtime (pos_global <
+    # boundaries[-1] always) but gives Inductor a provable upper bound for
+    # the downstream ``seq_lengths[batch_ids]`` indirect index.
     seq_lengths = torch.diff(seq_offsets_i32)  # (B,)
     B = seq_lengths.size(0)
     pos_global = torch.arange(total_q, device=device, dtype=torch.int32)
-    batch_ids = torch.repeat_interleave(
-        torch.arange(B, device=device, dtype=torch.int32),
-        seq_lengths,
+    boundaries = torch.cumsum(seq_lengths, dim=0).to(torch.int32)  # (B,)
+    batch_ids = (
+        torch.searchsorted(boundaries, pos_global, right=True)
+        .clamp_max(B - 1)
+        .to(torch.int32)
     )
     pos_local = pos_global - seq_offsets_i32[batch_ids]
     L = seq_lengths[batch_ids]  # per-position sequence length
