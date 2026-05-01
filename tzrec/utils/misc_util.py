@@ -57,20 +57,21 @@ def run_cmd(cmd_str, log_file, env=None, timeout=None):
             return True
         else:
             with open(log_file) as lfile:
-                log_text = lfile.read()
-            if "The server socket has failed to listen" in log_text:
+                log_content = lfile.read()
+            if "The server socket has failed to listen" in log_content:
                 continue
-            else:
-                # Surface the failing subprocess's tail so callers (including
-                # CI consoles that don't upload per-rank log files) can see
-                # *why* it returned non-zero, instead of just an opaque
-                # ``False`` percolating up to assertTrue.
-                print(
-                    f"RUNCMD FAILED (returncode={proc.returncode}): "
-                    f"tail of {log_file}:\n" + "\n".join(log_text.splitlines()[-80:]),
-                    flush=True,
-                )
-                return False
+            # Tail-dump to stdout so CI captures the real stack trace;
+            # the per-stage tmp/<dir>/log_*.txt is wiped on runner cleanup.
+            tail_lines = 500
+            tail = "".join(log_content.splitlines(keepends=True)[-tail_lines:])
+            print(
+                f"RUNCMD FAILED (rc={proc.returncode}): {run_cmd_str}\n"
+                f"--- last {tail_lines} lines of {log_file} ---\n"
+                f"{tail}"
+                f"--- end of {log_file} ---",
+                flush=True,
+            )
+            return False
     return False
 
 

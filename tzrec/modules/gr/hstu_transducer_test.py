@@ -119,6 +119,7 @@ class HSTUTransducerTest(unittest.TestCase):
             seq_offsets=s["offsets"],
             max_seq_len=s["max_seq_len"],
             total_uih_len=s["total_uih_len"],
+            total_targets=s["total_targets"],
             post_stu_seq_offsets=s["offsets"],
             post_stu_max_seq_len=s["max_seq_len"],
             plan=None,
@@ -143,6 +144,7 @@ class HSTUTransducerTest(unittest.TestCase):
             seq_offsets=s["offsets"],
             max_seq_len=s["max_seq_len"],
             total_uih_len=s["total_uih_len"],
+            total_targets=s["total_targets"],
             post_stu_seq_offsets=post_stu_seq_offsets,
             post_stu_max_seq_len=post_stu_max_seq_len,
             plan=s["plan"],
@@ -166,8 +168,8 @@ class HSTUTransducerTest(unittest.TestCase):
         # seq_offsets / max_seq_len come from the post-STU outputs.
         self.assertIs(out_offsets, post_stu_seq_offsets)
         self.assertEqual(out_max, post_stu_max_seq_len)
-        # total_uih_len is reset to None so split_2D_jagged derives it.
-        self.assertIsNone(out_total_uih)
+        expected_total_uih = s["plan"].total_kept - s["total_targets"]
+        self.assertEqual(out_total_uih, expected_total_uih)
 
     # ---------- forward() end-to-end integration tests ----------
 
