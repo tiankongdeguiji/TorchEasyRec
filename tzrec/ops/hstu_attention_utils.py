@@ -23,17 +23,37 @@ from tzrec.utils.fx_util import fx_int_item
 torch.fx.wrap(fx_int_item)
 
 
-@torch.fx.wrap
-def _emit_check_total_q_positive(total_q: int) -> None:
-    """Inductor symbolic-shape hint that ``total_q`` is a positive size.
+# Register a black-box op for the (3, total_q) -> (nheads, 3, total_q)
+# broadcast so Inductor doesn't try to lower it as a Pointwise.  Inductor's
+# combine_contiguous_dims for that 3D iteration with symbolic last dim
+# emits ModularIndexing(idx, total_q, 3) whose sympy simplifier hits a
+# ZeroDivisionError during AOT compile.  Use the low-level
+# torch.library.define/impl/register_fake API (matching the convention in
+# ``cutlass_hstu_attention.py``) rather than ``@torch.library.custom_op``
+# to avoid the AOTI multi-thread-predict deadlock the latter triggers.
+_SLA_LIB = torch.library.Library("tzrec", "FRAGMENT")
+_SLA_LIB.define("_sla_broadcast_func_to_heads(Tensor func_2d, int nheads) -> Tensor")
 
-    ``@torch.fx.wrap``'d so fx symbolic_trace emits a call_function node
-    instead of trying to evaluate ``total_q > 0`` on a Proxy.
-    Body is a no-op outside ``torch.compiler.is_compiling()`` (eager run).
-    """
-    if not torch.jit.is_scripting() and torch.compiler.is_compiling():
-        torch._check_is_size(total_q)
-        torch._check(total_q > 0)
+
+def _sla_broadcast_func_to_heads_impl(
+    func_2d: torch.Tensor, nheads: int
+) -> torch.Tensor:
+    return func_2d.unsqueeze(0).expand(nheads, *func_2d.shape).contiguous()
+
+
+def _sla_broadcast_func_to_heads_meta(
+    func_2d: torch.Tensor, nheads: int
+) -> torch.Tensor:
+    return torch.empty(
+        nheads, *func_2d.shape, dtype=func_2d.dtype, device=func_2d.device
+    )
+
+
+_SLA_LIB.impl("_sla_broadcast_func_to_heads", _sla_broadcast_func_to_heads_impl, "CUDA")
+_SLA_LIB.impl("_sla_broadcast_func_to_heads", _sla_broadcast_func_to_heads_impl, "CPU")
+torch.library.register_fake("tzrec::_sla_broadcast_func_to_heads")(
+    _sla_broadcast_func_to_heads_meta
+)
 
 
 def build_sla_func_tensor(
@@ -81,8 +101,8 @@ def build_sla_func_tensor(
         device: target device (inferred from seq_offsets if None).
 
     Returns:
-        func tensor of shape (nheads, 3, total_q), dtype int32; head dim
-        is a stride-0 broadcast view, do not call ``.contiguous()``.
+        func tensor of shape (nheads, 3, total_q), dtype int32, contiguous
+        (head dim materialized inside ``_sla_broadcast_func_to_heads``).
     """
     if sla_k1 < 0 or sla_k2 < 0 or contextual_seq_len < 0:
         raise ValueError(
@@ -92,13 +112,6 @@ def build_sla_func_tensor(
         )
     if device is None:
         device = seq_offsets.device
-    # Tell the symbolic shape engine total_q is a positive size.  Without
-    # this, Inductor's combine_contiguous_dims for the (nheads, 3, total_q)
-    # output emits ModularIndexing(idx, total_q, 3) whose sympy simplifier
-    # hits a ZeroDivisionError under AOT compile when total_q is dynamic
-    # and not provably > 0.  At runtime the SLA path is only entered when
-    # there are query tokens, so this always holds.
-    _emit_check_total_q_positive(total_q)
     # Unconditional cast: avoids fx tracing `Proxy.dtype != int32` as a
     # Python bool; no-op on the fast path (callers pass int32).
     seq_offsets_i32 = seq_offsets.to(torch.int32)
@@ -147,7 +160,10 @@ def build_sla_func_tensor(
     col_max1 = torch.where(is_history, hist_col_max1, H_boundary)
 
     func_2d = torch.stack([col_max0, col_min0, col_max1], dim=0)  # (3, total_q)
-    return func_2d.unsqueeze(0).expand(nheads, 3, total_q)
+    # Custom op (black-box to Inductor) does the head-dim broadcast +
+    # contiguous-ification.  See the op definition above for the AOT
+    # codegen reason; cannot use plain ``.unsqueeze(0).expand(...)`` here.
+    return torch.ops.tzrec._sla_broadcast_func_to_heads(func_2d, nheads)
 
 
 @dataclass(frozen=True)
