@@ -228,9 +228,13 @@ def mixed_precision_to_dtype(mixed_precision: Optional[str]) -> Optional[torch.d
 def resolve_mixed_precision(pipeline_config: EasyRecConfig) -> str:
     """Resolve the mixed_precision mode for export/inference.
 
-    Precedence: ``export_config.mixed_precision`` (when set) overrides
+    Precedence: ``TZREC_MIXED_PRECISION`` env var (when set) overrides
+    ``export_config.mixed_precision``, which in turn overrides
     ``train_config.mixed_precision``. Empty string means no AMP.
     """
+    env_mp = os.environ.get("TZREC_MIXED_PRECISION", "")
+    if env_mp:
+        return env_mp
     if pipeline_config.HasField("export_config"):
         export_mp = pipeline_config.export_config.mixed_precision
         if export_mp:
