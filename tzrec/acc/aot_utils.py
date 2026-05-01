@@ -170,15 +170,18 @@ def export_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
-        # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
-        # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
-        # cost than Ada + cu12). The user-defined HSTU triton kernel has
-        # its own TMA branch via ENABLE_TMA env which is separate from
-        # this inductor-level config. We do NOT enable
-        # triton.use_tensor_descriptor: inductor 2.11 has a bug where it
-        # tries to compare TensorDescriptor objects with int sizes during
-        # codegen, which fails for our HSTU model graph.
-        aoti_compile_cfg["triton.cudagraphs"] = True
+        # Blackwell-specific: assume_aligned_inputs lets inductor emit
+        # tighter codegen for triton kernels with aligned tensor inputs.
+        #
+        # We do NOT enable triton.cudagraphs or triton.use_tensor_descriptor
+        # together with the HSTU model under ENABLE_TMA=1: both paths force
+        # inductor's cpp_wrapper, which has a known bug
+        # ("TypeError: '<=' not supported between TensorDescriptor and int")
+        # on graphs that already carry TensorDescriptor inputs from the
+        # user-defined kernel's TMA branch. The HSTU kernel-internal TMA
+        # (ENABLE_TMA=1) is the bigger lever; cudagraphs / use_tensor_descriptor
+        # would help peripheral inductor-emitted ops but conflict with
+        # the user kernel's TMA path in this triton/inductor combo.
         aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
@@ -457,15 +460,18 @@ def export_unified_model_aot(
         aoti_compile_cfg["max_autotune"] = True
         aoti_compile_cfg["max_autotune_gemm"] = True
         aoti_compile_cfg["coordinate_descent_tuning"] = True
-        # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
-        # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
-        # cost than Ada + cu12). The user-defined HSTU triton kernel has
-        # its own TMA branch via ENABLE_TMA env which is separate from
-        # this inductor-level config. We do NOT enable
-        # triton.use_tensor_descriptor: inductor 2.11 has a bug where it
-        # tries to compare TensorDescriptor objects with int sizes during
-        # codegen, which fails for our HSTU model graph.
-        aoti_compile_cfg["triton.cudagraphs"] = True
+        # Blackwell-specific: assume_aligned_inputs lets inductor emit
+        # tighter codegen for triton kernels with aligned tensor inputs.
+        #
+        # We do NOT enable triton.cudagraphs or triton.use_tensor_descriptor
+        # together with the HSTU model under ENABLE_TMA=1: both paths force
+        # inductor's cpp_wrapper, which has a known bug
+        # ("TypeError: '<=' not supported between TensorDescriptor and int")
+        # on graphs that already carry TensorDescriptor inputs from the
+        # user-defined kernel's TMA branch. The HSTU kernel-internal TMA
+        # (ENABLE_TMA=1) is the bigger lever; cudagraphs / use_tensor_descriptor
+        # would help peripheral inductor-emitted ops but conflict with
+        # the user kernel's TMA path in this triton/inductor combo.
         aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
