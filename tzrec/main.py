@@ -912,6 +912,19 @@ def export(
     pipeline_config = config_util.load_pipeline_config(pipeline_config_path)
     ori_pipeline_config = copy.copy(pipeline_config)
 
+    # Propagate the model's training-time TF32 intent (cudnn_allow_tf32 /
+    # cuda_matmul_allow_tf32 from train_config) to PyTorch globals BEFORE
+    # AOTI traces the model. AOTI captures `torch.backends.cuda.matmul.
+    # allow_tf32` as a Python literal at trace time and bakes it into the
+    # cubin (constexpr ALLOW_TF32 in tl.dot). Without this call, the
+    # exported cubin uses PyTorch's default False — even if the model
+    # trains with TF32 enabled — and on Blackwell sm_120 this causes a
+    # ~50x per-block slowdown in HSTU forward (FFMA + register spill
+    # instead of HMMA tensor cores). The other entry points (train /
+    # evaluate / predict / predict_checkpoint) already do this; export
+    # was the one missing call site.
+    acc_utils.allow_tf32(pipeline_config.train_config, backend="export")
+
     if is_rank_zero:
         if os.path.exists(export_dir):
             raise RuntimeError(f"directory {export_dir} already exist.")

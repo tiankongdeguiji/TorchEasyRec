@@ -319,9 +319,23 @@ def get_max_export_batch_size() -> int:
 
 
 def allow_tf32(train_config: TrainConfig, backend: str) -> None:
-    """Set allow_tf32 flag for cudnn and cuda matmul."""
-    if backend == "nccl":
-        if train_config.HasField("cudnn_allow_tf32"):
-            torch.backends.cudnn.allow_tf32 = train_config.cudnn_allow_tf32
-        if train_config.HasField("cuda_matmul_allow_tf32"):
-            torch.backends.cuda.matmul.allow_tf32 = train_config.cuda_matmul_allow_tf32
+    """Set allow_tf32 flag for cudnn and cuda matmul.
+
+    Apply unconditionally — these are hardware-level matmul precision
+    settings, not distributed-backend-specific. The previous
+    ``if backend == "nccl"`` guard silently dropped the pipeline.config
+    intent everywhere except training (export uses gloo, eval/predict
+    can use either), causing AOTI to compile triton kernels with the
+    PyTorch default ``allow_tf32 = False`` even for models that train
+    with ``cuda_matmul_allow_tf32: true``. On Blackwell sm_120 this
+    cascades into 50x per-block slowdown of HSTU forward; on Ada sm_89
+    it's a smaller but still measurable regression.
+
+    The ``backend`` arg is retained for call-site compatibility but no
+    longer changes behavior.
+    """
+    del backend  # unused; kept for API stability
+    if train_config.HasField("cudnn_allow_tf32"):
+        torch.backends.cudnn.allow_tf32 = train_config.cudnn_allow_tf32
+    if train_config.HasField("cuda_matmul_allow_tf32"):
+        torch.backends.cuda.matmul.allow_tf32 = train_config.cuda_matmul_allow_tf32
