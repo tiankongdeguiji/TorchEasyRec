@@ -172,12 +172,13 @@ def export_model_aot(
         aoti_compile_cfg["coordinate_descent_tuning"] = True
         # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
         # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
-        # cost than Ada + cu12), and the inductor-side TMA path
-        # (use_tensor_descriptor) gives PyTorch-emitted triton kernels
-        # access to TMA on sm_90+ (the user-defined HSTU triton kernel
-        # uses its own TMA branch via ENABLE_TMA env, which is separate).
+        # cost than Ada + cu12). The user-defined HSTU triton kernel has
+        # its own TMA branch via ENABLE_TMA env which is separate from
+        # this inductor-level config. We do NOT enable
+        # triton.use_tensor_descriptor: inductor 2.11 has a bug where it
+        # tries to compare TensorDescriptor objects with int sizes during
+        # codegen, which fails for our HSTU model graph.
         aoti_compile_cfg["triton.cudagraphs"] = True
-        aoti_compile_cfg["triton.use_tensor_descriptor"] = True
         aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
@@ -458,12 +459,13 @@ def export_unified_model_aot(
         aoti_compile_cfg["coordinate_descent_tuning"] = True
         # Blackwell-specific: cudagraphs at AOTI compile reduces per-launch
         # overhead (Blackwell + cu13 has 53x higher cudaStreamIsCapturing
-        # cost than Ada + cu12), and the inductor-side TMA path
-        # (use_tensor_descriptor) gives PyTorch-emitted triton kernels
-        # access to TMA on sm_90+ (the user-defined HSTU triton kernel
-        # uses its own TMA branch via ENABLE_TMA env, which is separate).
+        # cost than Ada + cu12). The user-defined HSTU triton kernel has
+        # its own TMA branch via ENABLE_TMA env which is separate from
+        # this inductor-level config. We do NOT enable
+        # triton.use_tensor_descriptor: inductor 2.11 has a bug where it
+        # tries to compare TensorDescriptor objects with int sizes during
+        # codegen, which fails for our HSTU model graph.
         aoti_compile_cfg["triton.cudagraphs"] = True
-        aoti_compile_cfg["triton.use_tensor_descriptor"] = True
         aoti_compile_cfg["assume_aligned_inputs"] = True
     with torch._inductor.config.patch(aoti_compile_cfg):
         aoti_dir = os.path.join(save_dir, "aoti")
