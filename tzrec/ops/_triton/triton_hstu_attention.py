@@ -14,6 +14,7 @@
 # thanks to their public work.
 
 
+import os
 from typing import List, Optional, Tuple
 
 import torch
@@ -261,6 +262,17 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
+
+    # On large-SM-count Blackwell (sm_120 RTX PRO 5000 has 96+ SMs), large
+    # BLOCK_M produces few grid blocks for typical HSTU sequence lengths,
+    # leaving most of the GPU idle. ncu profile of the picked
+    # BLOCK_M=128 config showed 4 grid blocks total → 3.6% SM busy, 8.3%
+    # warp occupancy on a 96-SM GPU. Filter out BLOCK_M >= 128 configs
+    # via env var so autotune picks smaller BLOCK_M (more grid blocks ->
+    # better SM utilization on Blackwell). Env var keeps the change opt-in
+    # so existing sm_89 / sm_86 exports are unaffected.
+    if os.environ.get("TZREC_HSTU_SMALL_BLOCK_M", "0").lower() in ("1", "true", "yes"):
+        configs = [c for c in configs if c.kwargs.get("BLOCK_M", 0) < 128]
     return configs
 
 
