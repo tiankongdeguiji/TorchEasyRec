@@ -466,21 +466,21 @@ class StuTest(unittest.TestCase):
         layer2 = self._make_sla_layer(sla_k1=4, sla_k2=2)
         x, x_offsets, max_seq_len, num_targets = self._sla_inputs()
 
-        out1, attn_func1, sig1 = layer1(
+        out1, attn_func1 = layer1(
             x=x,
             x_offsets=x_offsets,
             max_seq_len=max_seq_len,
             num_targets=num_targets,
         )
-        _, attn_func2, sig2 = layer2(
+        _, attn_func2 = layer2(
             x=out1,
             x_offsets=x_offsets,
             max_seq_len=max_seq_len,
             num_targets=num_targets,
             prev_attn_func=attn_func1,
-            prev_attn_func_sig=sig1,
+            prev_attn_func_sig=layer1.attn_func_static_sig,
         )
-        self.assertEqual(sig2, sig1)
+        self.assertEqual(layer2.attn_func_static_sig, layer1.attn_func_static_sig)
         # Tensor identity confirms layer2 reused rather than rebuilt.
         self.assertIs(attn_func2, attn_func1)
 
@@ -490,21 +490,21 @@ class StuTest(unittest.TestCase):
         layer2 = self._make_sla_layer(sla_k1=8, sla_k2=2)  # different k1
         x, x_offsets, max_seq_len, num_targets = self._sla_inputs()
 
-        out1, attn_func1, sig1 = layer1(
+        out1, attn_func1 = layer1(
             x=x,
             x_offsets=x_offsets,
             max_seq_len=max_seq_len,
             num_targets=num_targets,
         )
-        _, attn_func2, sig2 = layer2(
+        _, attn_func2 = layer2(
             x=out1,
             x_offsets=x_offsets,
             max_seq_len=max_seq_len,
             num_targets=num_targets,
             prev_attn_func=attn_func1,
-            prev_attn_func_sig=sig1,
+            prev_attn_func_sig=layer1.attn_func_static_sig,
         )
-        self.assertNotEqual(sig2, sig1)
+        self.assertNotEqual(layer2.attn_func_static_sig, layer1.attn_func_static_sig)
         self.assertIsNot(attn_func2, attn_func1)
 
     def test_sla_on_triton_kernel_raises(self) -> None:

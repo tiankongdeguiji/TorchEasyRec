@@ -67,6 +67,8 @@ class HSTUTransducer(BaseModule):
             on layers ``>= N1``.  Both ``attn_truncation_split_layer`` and
             ``attn_truncation_tail_len`` must be ``> 0`` to enable
             truncation; setting only one is rejected at construction.
+        name (str): MoT channel name; forwarded to the input
+            preprocessor (replaces the ``uih`` prefix on UIH-side keys).
     """
 
     def __init__(
@@ -87,6 +89,7 @@ class HSTUTransducer(BaseModule):
         return_full_embeddings: bool = False,
         attn_truncation_split_layer: int = 0,
         attn_truncation_tail_len: int = 0,
+        name: str = "",
     ) -> None:
         super().__init__(is_inference=is_inference)
         self._input_preprocessor: InputPreprocessor = create_input_preprocessor(
@@ -97,6 +100,7 @@ class HSTUTransducer(BaseModule):
             max_contextual_seq_len=max_contextual_seq_len,
             contextual_group_name=contextual_group_name,
             output_embedding_dim=stu["embedding_dim"],
+            name=name,
         )
         stu = dict(stu)
         if "contextual_seq_len" not in stu:
@@ -256,18 +260,18 @@ class HSTUTransducer(BaseModule):
         seq_offsets: torch.Tensor,
         max_seq_len: int,
         total_uih_len: int,
+        total_targets: int,
         post_stu_seq_offsets: torch.Tensor,
         post_stu_max_seq_len: int,
         plan: Optional[STUTruncationPlan],
         kernel: Kernel,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[int]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
         """Replay ``plan`` on ``seq_timestamps`` and refresh dependent metadata.
 
-        When ``plan is None``, returns inputs unchanged. When ``plan is not
-        None``, returns post-truncation ``(seq_timestamps, plan.new_lengths,
-        post_stu_seq_offsets, post_stu_max_seq_len, None)`` -- the trailing
-        ``None`` replaces ``total_uih_len`` so the caller's
-        ``split_2D_jagged`` can re-derive it from the truncated offsets.
+        ``plan is None`` -> inputs unchanged.  Otherwise returns the
+        post-truncation tuple; ``post_truncation_total_uih_len`` =
+        ``plan.total_kept - total_targets`` (a static int, so the
+        downstream ``split_2D_jagged`` skips its ``.item()`` fallback).
         """
         if plan is None:
             return (
@@ -285,7 +289,7 @@ class HSTUTransducer(BaseModule):
             plan.new_lengths,
             post_stu_seq_offsets,
             post_stu_max_seq_len,
-            None,
+            plan.total_kept - total_targets,
         )
 
     def forward(
@@ -343,6 +347,7 @@ class HSTUTransducer(BaseModule):
             seq_offsets=seq_offsets,
             max_seq_len=max_seq_len,
             total_uih_len=total_uih_len,
+            total_targets=total_targets,
             post_stu_seq_offsets=post_stu_seq_offsets,
             post_stu_max_seq_len=post_stu_max_seq_len,
             plan=plan,
