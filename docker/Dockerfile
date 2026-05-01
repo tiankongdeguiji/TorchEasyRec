@@ -81,8 +81,7 @@ ENV LD_LIBRARY_PATH ${LD_LIBRARY_PATH}
 ADD requirements /root/requirements
 ADD requirements.txt /root/requirements.txt
 ADD requirements-${DEVICE}.txt /root/requirements-${DEVICE}.txt
-ARG CACHE_BUST_REQ=
-RUN : ${CACHE_BUST_REQ:-x} && cd /root && \
+RUN cd /root && \
     pip install -r requirements-${DEVICE}.txt && \
     rm -rf requirements requirements.txt requirements-*.txt && \
     pip cache purge && \
