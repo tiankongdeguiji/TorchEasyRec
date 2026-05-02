@@ -70,6 +70,10 @@ def create_sparse_optimizer(
         return optimizers.PartialRowWiseAdam, optimizer_kwargs
     elif optimizer_type == "rowwise_adagrad_optimizer":
         return rowwise_adagrad.RowWiseAdagrad, optimizer_kwargs
+    elif optimizer_type == "adadelta_optimizer":
+        return optimizers.AdaDelta, optimizer_kwargs
+    elif optimizer_type == "rmsprop_optimizer":
+        return optimizers.RMSProp, optimizer_kwargs
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
 
