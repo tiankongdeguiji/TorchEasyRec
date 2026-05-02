@@ -250,6 +250,12 @@ class STULayer(STU):
             ``max_seq_len`` (legacy behavior). When set to a fixed value
             (typically the model's config ``max_seq_len``), attention output
             is invariant to batch-level seq-length.
+        fp8_quant_mode (int): FP8 quantization mode forwarded to the
+            attention kernel.  ``-1`` (default) keeps BF16/FP16; ``0..5``
+            select an FP8 granularity (see ``STU.fp8_quant_mode`` proto
+            doc).  Requires ``Kernel.CUTLASS`` (Hopper, SM>=90) and
+            ``attention_dim`` in ``{64, 128, 256}``; ``cached_forward``
+            (serving) must keep ``-1``.
         is_inference (bool): whether to run in inference mode.
     """
 
@@ -278,11 +284,24 @@ class STULayer(STU):
         sla_k1: int = 0,
         sla_k2: int = 0,
         scaling_seqlen: int = -1,
+        fp8_quant_mode: int = -1,
         is_inference: bool = False,
     ) -> None:
         super().__init__(
             is_inference=is_inference,
         )
+        if fp8_quant_mode != -1:
+            if fp8_quant_mode < 0 or fp8_quant_mode > 5:
+                raise ValueError(
+                    f"STULayer fp8_quant_mode must be -1 or in [0, 5]; "
+                    f"got {fp8_quant_mode}."
+                )
+            if attention_dim not in (64, 128, 256):
+                raise ValueError(
+                    f"STULayer with fp8_quant_mode={fp8_quant_mode} requires "
+                    f"attention_dim in (64, 128, 256); got {attention_dim}. "
+                    "FP8 e4m3 mantissa is too narrow at attention_dim=32."
+                )
         self.reset_kv_cache()
         self._num_heads: int = num_heads
         self._embedding_dim: int = embedding_dim
@@ -302,6 +321,7 @@ class STULayer(STU):
         self._sla_k1: int = sla_k1
         self._sla_k2: int = sla_k2
         self._scaling_seqlen: int = scaling_seqlen
+        self._fp8_quant_mode: int = fp8_quant_mode
 
         self._uvqk_weight: torch.nn.Parameter = torch.nn.Parameter(
             torch.empty(
@@ -530,6 +550,7 @@ class STULayer(STU):
                 enable_tma=self._enable_tma,
                 attn_func=local_attn_func,
                 scaling_seqlen=self._scaling_seqlen,
+                fp8_quant_mode=self._fp8_quant_mode,
             )
 
         self.update_kv_cache(
@@ -579,6 +600,16 @@ class STULayer(STU):
         Returns:
             torch.Tensor: output sequence embedding tensor.
         """
+        if self._fp8_quant_mode != -1:
+            # The cached / serving path goes through delta_hstu_mha, which
+            # has no FP8 entry in this iteration.  Flag the train/serve
+            # mismatch loudly rather than silently fall back to BF16.
+            raise NotImplementedError(
+                f"STULayer.cached_forward (serving) does not support "
+                f"fp8_quant_mode={self._fp8_quant_mode}; FP8 serving is a "
+                "follow-up. Either disable fp8_quant_mode or use the "
+                "non-cached forward path."
+            )
         with record_function("## stu_compute_uqvk ##"):
             delta_u, delta_q, delta_k, delta_v = hstu_compute_uqvk(
                 x=delta_x,

@@ -323,6 +323,7 @@ def hstu_preprocess_and_attention(
     enable_tma: bool = False,
     attn_func: Optional[torch.Tensor] = None,
     scaling_seqlen: int = -1,
+    fp8_quant_mode: int = -1,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     if not is_fx_tracing():
         torch._assert(max_seq_len > 0, "max_seq_len must be larger than 0")
@@ -334,6 +335,16 @@ def hstu_preprocess_and_attention(
         torch._assert(
             uvqk_weight.shape[1] == 2 * num_heads * (hidden_dim + attn_dim),
             "uvqk_weight.shape[1] must equal 2 * num_heads * (hidden_dim + attn_dim)",
+        )
+    if fp8_quant_mode != -1 and kernel == Kernel.TRITON and prefill is False:
+        # FP8 lives only on the CUTLASS / PyTorch dispatch out of hstu_mha;
+        # the fused Triton preprocess+attention has no FP8 entry.  Catch
+        # this here so the user gets a clear error before the inner
+        # hstu_mha would silently run BF16.
+        raise ValueError(
+            "fp8_quant_mode is not supported on the fused Triton "
+            "preprocess+attention path; use kernel=Kernel.CUTLASS for "
+            "the Hopper FP8 kernel."
         )
     if kernel == Kernel.TRITON and prefill is False:
         # The fused Triton preprocess+attention does not implement the
@@ -417,5 +428,6 @@ def hstu_preprocess_and_attention(
             kernel=kernel,
             attn_func=attn_func,
             scaling_seqlen=scaling_seqlen,
+            fp8_quant_mode=fp8_quant_mode,
         ).view(-1, hidden_dim * num_heads)
     return u, attn_output, k, v
