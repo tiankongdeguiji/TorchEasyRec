@@ -33,7 +33,7 @@ jobs:
           done
           docker run --rm \
             --workdir /__w/TorchEasyRec/TorchEasyRec \
-            --gpus all --ipc host --ulimit memlock=-1 \
+            --gpus all --shm-size=512g --ulimit memlock=-1 \
             -e HOME=/github/home \
             -e GITHUB_ACTIONS=true \
             -e CI=true \
