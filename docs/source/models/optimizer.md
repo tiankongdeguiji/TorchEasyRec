@@ -43,9 +43,36 @@ train_config {
 ```
 
 - sparse_optimizer
+
   - optimizer: 优化器类型，具体见sparse optimize的[配置文档](../reference.md)
   - learning_rate: sparse_optimizer的学习率计划器,具体见sparse_optimizer中的learning_rate的[配置文档](../reference.md)
+
+  支持的sparse_optimizer类型 (element-wise 状态)：
+
+  ```
+  # AdaDelta：每行 2*D fp32 状态 (E[g^2], E[dx^2])
+  sparse_optimizer {
+      adadelta_optimizer {
+          lr: 0.001
+          rho: 0.95
+          eps: 1e-6
+      }
+      constant_learning_rate {}
+  }
+
+  # RMSProp：每行 D fp32 状态 (E[g^2])
+  sparse_optimizer {
+      rmsprop_optimizer {
+          lr: 0.001
+          alpha: 0.99
+          eps: 1e-8
+      }
+      constant_learning_rate {}
+  }
+  ```
+
 - dense_optimizer
+
   - optimizer: 优化器类型，具体见dense optimize的[配置文档](../reference.md)
 
   - learning_rate: dense_optimizer的学习率计划器,具体见dense_optimizer中的learning_rate的[配置文档](../reference.md)

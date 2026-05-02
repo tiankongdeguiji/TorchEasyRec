@@ -98,6 +98,20 @@ class RankIntegrationTest(unittest.TestCase):
             output_columns="probs_ctr,probs_cvr",
         )
 
+    def test_dbmtl_sparse_adadelta_train_eval_export(self):
+        self._test_rank_nofg(
+            "tzrec/tests/configs/dbmtl_sparse_adadelta_mock.config",
+            reserved_columns="clk,buy",
+            output_columns="probs_ctr,probs_cvr",
+        )
+
+    def test_dbmtl_sparse_rmsprop_train_eval_export(self):
+        self._test_rank_nofg(
+            "tzrec/tests/configs/dbmtl_sparse_rmsprop_mock.config",
+            reserved_columns="clk,buy",
+            output_columns="probs_ctr,probs_cvr",
+        )
+
     def test_multi_tower_din_fg_encoded_finetune(self):
         self.success = utils.test_train_eval(
             "tzrec/tests/configs/multi_tower_din_mock.config",
