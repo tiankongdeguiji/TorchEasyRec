@@ -21,11 +21,46 @@
 # previously motivated the in-house low-level ``torch.library`` wrapping
 # does not apply.
 
+import functools
 from typing import Optional
 
 import torch
 
+from tzrec.utils.logging_util import logger
+
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
+
+_FP8_HEAD_DIMS = (64, 128, 256)
+
+
+@functools.lru_cache(maxsize=1)
+def _assert_fp8_capable() -> None:
+    """Raise if the current CUDA device cannot run the FP8 attention path."""
+    if not torch.cuda.is_available():
+        raise RuntimeError("FP8 hstu requires CUDA")
+    major, minor = torch.cuda.get_device_capability()
+    if major < 9:
+        raise RuntimeError(
+            f"FP8 hstu requires SM>=90 (Hopper); current device is "
+            f"sm{major}{minor}. Disable fp8_quant_mode (set to -1) "
+            "or run on Hopper."
+        )
+
+
+def _assert_fp8_headdim(head_dim: int) -> None:
+    """Reject head dims unsupported by the wheel's FP8 kernels."""
+    if head_dim not in _FP8_HEAD_DIMS:
+        raise ValueError(
+            f"FP8 hstu requires attention_dim in {_FP8_HEAD_DIMS}, got {head_dim}."
+        )
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_fp8_mode_zero_unsafe() -> None:
+    logger.warning(
+        "fp8_quant_mode=0 uses descale=1.0 -- no overflow protection. "
+        "Use mode 4 (per-batch) or 5 (per-tensor) for production."
+    )
 
 
 @torch.fx.wrap
@@ -42,6 +77,7 @@ def cutlass_hstu_mha(
     contextual_seq_len: int = 0,
     attn_func: Optional[torch.Tensor] = None,
     scaling_seqlen: int = -1,
+    quant_mode: int = -1,
 ) -> torch.Tensor:
     """CUTLASS-based HSTU multi-head attention.
 
@@ -85,10 +121,24 @@ def cutlass_hstu_mha(
         scaling_seqlen: divisor used to scale the attention output inside
             the kernel. ``-1`` (default) falls back to ``max_seq_len`` so
             the behavior matches the legacy code path.
+        quant_mode: FP8 quantization mode forwarded to the wheel's Hopper
+            ``hstu_attn_varlen_func``. ``-1`` (default) keeps the BF16/FP16
+            path; ``0..5`` enable FP8 with the granularity defined in the
+            ``STU.fp8_quant_mode`` proto field. ``quant_mode != -1``
+            requires SM>=90 and ``q.shape[2] in (64, 128, 256)``.
 
     Returns:
         output tensor of shape (total, nheads, hidden_dim).
     """
+    if quant_mode != -1:
+        if quant_mode < 0 or quant_mode > 5:
+            raise ValueError(
+                f"fp8 quant_mode must be -1 or in [0, 5]; got {quant_mode}."
+            )
+        if quant_mode == 0:
+            _warn_fp8_mode_zero_unsafe()
+        _assert_fp8_capable()
+        _assert_fp8_headdim(q.shape[2])
     if q.shape[2] != v.shape[2]:
         raise ValueError(
             f"CUTLASS hstu_attn requires attention_dim == hidden_dim, "
@@ -169,14 +219,7 @@ def cutlass_hstu_mha(
 
     from hstu_attn import hstu_attn_varlen_func  # lazy
 
-    return hstu_attn_varlen_func(
-        q,
-        k,
-        v,
-        cu_seqlens,
-        cu_seqlens,
-        max_seq_len,
-        max_seq_len,
+    call_kwargs = dict(
         num_contexts=num_contexts_tensor,
         num_targets=num_targets_int32,
         target_group_size=1,
@@ -186,4 +229,20 @@ def cutlass_hstu_mha(
         has_drab=False,
         func=attn_func,
         scaling_seqlen=scaling_seqlen,
+    )
+    if quant_mode != -1:
+        # The Hopper variant of hstu_attn_varlen_func accepts quant_mode;
+        # the Ampere/Ada variant does not. We've already gated to SM>=90
+        # above, so adding the kwarg only on the FP8 path is safe.
+        call_kwargs["quant_mode"] = quant_mode
+
+    return hstu_attn_varlen_func(
+        q,
+        k,
+        v,
+        cu_seqlens,
+        cu_seqlens,
+        max_seq_len,
+        max_seq_len,
+        **call_kwargs,
     )
