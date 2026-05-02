@@ -24,6 +24,13 @@ jobs:
         run: |
           WORK_ROOT="$(dirname "$RUNNER_WORKSPACE")"
           EXTERNALS_ROOT="$(dirname "$WORK_ROOT")/externals"
+          echo "RUNNER_WORKSPACE=$RUNNER_WORKSPACE"
+          echo "WORK_ROOT=$WORK_ROOT"
+          echo "EXTERNALS_ROOT=$EXTERNALS_ROOT"
+          echo "PWD=$PWD"
+          for p in "$WORK_ROOT" "$EXTERNALS_ROOT" "$WORK_ROOT/_temp" "$WORK_ROOT/_actions" "$WORK_ROOT/_tool" "$WORK_ROOT/_temp/_github_home" "$WORK_ROOT/_temp/_github_workflow"; do
+            if [ -e "$p" ]; then echo "EXISTS: $p"; else echo "MISSING: $p"; fi
+          done
           docker run --rm \
             --workdir /__w/TorchEasyRec/TorchEasyRec \
             --gpus all --ipc host --ulimit memlock=-1 \
