@@ -723,5 +723,71 @@ class STUStackTruncationTest(unittest.TestCase):
         self.assertEqual(out.size(0), int(new_offsets[-1].item()))
 
 
+class STULayerFp8ConfigTest(unittest.TestCase):
+    """CPU-runnable validation of STULayer's fp8_quant_mode config plumbing.
+
+    Construction-only tests: no kernel call, so they run on every CI
+    lane regardless of CUDA / Hopper availability.  The end-to-end
+    GPU/FP8 path is covered by HstuFp8AttnTest in
+    tzrec/ops/hstu_attention_test.py (skipped on non-Hopper).
+    """
+
+    _BASE_KWARGS = dict(
+        embedding_dim=64,
+        num_heads=4,
+        hidden_dim=64,
+        attention_dim=64,
+        output_dropout_ratio=0.0,
+    )
+
+    def test_default_is_disabled(self) -> None:
+        from tzrec.modules.gr.stu import STULayer
+
+        layer = STULayer(**self._BASE_KWARGS)
+        self.assertEqual(layer._fp8_quant_mode, -1)
+
+    @parameterized.expand([(0,), (1,), (2,), (3,), (4,), (5,)])
+    def test_valid_modes_round_trip(self, quant_mode: int) -> None:
+        from tzrec.modules.gr.stu import STULayer
+
+        layer = STULayer(fp8_quant_mode=quant_mode, **self._BASE_KWARGS)
+        self.assertEqual(layer._fp8_quant_mode, quant_mode)
+
+    @parameterized.expand([(-2,), (6,), (99,)])
+    def test_out_of_range_raises(self, quant_mode: int) -> None:
+        from tzrec.modules.gr.stu import STULayer
+
+        with self.assertRaisesRegex(ValueError, "fp8_quant_mode"):
+            STULayer(fp8_quant_mode=quant_mode, **self._BASE_KWARGS)
+
+    def test_unsupported_attention_dim_raises(self) -> None:
+        from tzrec.modules.gr.stu import STULayer
+
+        bad_kwargs = dict(self._BASE_KWARGS)
+        bad_kwargs["attention_dim"] = 32  # FP8 requires {64, 128, 256}
+        with self.assertRaisesRegex(ValueError, "attention_dim"):
+            STULayer(fp8_quant_mode=4, **bad_kwargs)
+
+    def test_proto_roundtrip_threads_field(self) -> None:
+        """STU.fp8_quant_mode survives the proto -> kwargs -> STULayer pipe."""
+        from tzrec.modules.gr.stu import STULayer
+        from tzrec.protos import module_pb2
+        from tzrec.utils.config_util import config_to_kwargs
+
+        stu_proto = module_pb2.STU(
+            embedding_dim=64,
+            num_heads=4,
+            hidden_dim=64,
+            attention_dim=64,
+            fp8_quant_mode=4,
+        )
+        kwargs = config_to_kwargs(stu_proto)
+        # config_to_kwargs preserves snake_case names (preserving_proto_field_name=True)
+        # so fp8_quant_mode is in kwargs as-is.
+        self.assertEqual(kwargs["fp8_quant_mode"], 4)
+        layer = STULayer(**kwargs)
+        self.assertEqual(layer._fp8_quant_mode, 4)
+
+
 if __name__ == "__main__":
     unittest.main()
