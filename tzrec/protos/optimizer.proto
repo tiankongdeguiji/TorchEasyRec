@@ -11,6 +11,8 @@ message SparseOptimizer {
         FusedPartialRowWiseLAMBOptimizer partial_rowwise_lamb_optimizer = 6;
         FusedPartialRowWiseAdamOptimizer partial_rowwise_adam_optimizer = 7;
         FusedRowWiseAdagradOptimizer rowwise_adagrad_optimizer = 8;
+        FusedAdaDeltaOptimizer adadelta_optimizer = 9;
+        FusedRMSPropOptimizer rmsprop_optimizer = 10;
     }
     oneof learning_rate {
         ConstantLR constant_learning_rate = 101;
@@ -124,6 +126,24 @@ message FusedRowWiseAdagradOptimizer {
     optional WeightDecayMode weight_decay_mode = 3 [default = NONE];
     optional bool gradient_clipping = 4 [default = false];
     optional float max_gradient = 5 [default = 1.0];
+}
+
+message FusedAdaDeltaOptimizer {
+    required float lr = 1 [default = 0.002];
+    optional float rho = 2 [default = 0.95];
+    optional float eps = 3 [default = 1e-6];
+    optional float weight_decay = 4 [default = 0.0];
+    optional bool gradient_clipping = 5 [default = false];
+    optional float max_gradient = 6 [default = 1.0];
+}
+
+message FusedRMSPropOptimizer {
+    required float lr = 1 [default = 0.002];
+    optional float alpha = 2 [default = 0.99];
+    optional float eps = 3 [default = 1e-8];
+    optional float weight_decay = 4 [default = 0.0];
+    optional bool gradient_clipping = 5 [default = false];
+    optional float max_gradient = 6 [default = 1.0];
 }
 
 message SGDOptimizer {
