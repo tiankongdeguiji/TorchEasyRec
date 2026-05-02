@@ -63,6 +63,29 @@ def _warn_fp8_mode_zero_unsafe() -> None:
     )
 
 
+class _ContiguousGradPassthrough(torch.autograd.Function):
+    """Identity in forward; ``grad.contiguous()`` in backward.
+
+    The wheel's ``_hstu_attn_varlen_backward`` requires ``dout`` to have a
+    contiguous last dimension, but standard PyTorch reductions (e.g.
+    ``out.sum().backward()``) propagate a broadcast / expanded grad that
+    fails that check.  The pre-refactor in-house autograd Function used
+    to call ``grad_output.contiguous()`` explicitly before the C op.  We
+    re-establish that contract here without re-implementing the wheel's
+    Function: this thin Function sits *after* the wheel's Function in
+    the autograd graph, so when grad flows back, ours runs first and
+    hands a contiguous grad to the wheel's backward.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+        return x
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):  # type: ignore[override]
+        return grad.contiguous()
+
+
 @torch.fx.wrap
 def cutlass_hstu_mha(
     max_seq_len: int,
@@ -236,7 +259,7 @@ def cutlass_hstu_mha(
         # above, so adding the kwarg only on the FP8 path is safe.
         call_kwargs["quant_mode"] = quant_mode
 
-    return hstu_attn_varlen_func(
+    out = hstu_attn_varlen_func(
         q,
         k,
         v,
@@ -246,3 +269,5 @@ def cutlass_hstu_mha(
         max_seq_len,
         **call_kwargs,
     )
+    # Wheel's backward requires contiguous dout; intercept grad here.
+    return _ContiguousGradPassthrough.apply(out)
