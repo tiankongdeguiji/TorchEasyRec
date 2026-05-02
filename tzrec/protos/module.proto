@@ -259,6 +259,17 @@ message STU {
     optional uint32 sla_k1 = 14;
     // Semi-Local Attention: global prefix length (0 = disabled)
     optional uint32 sla_k2 = 15;
+    // FP8 quantization mode for the attention kernel.
+    // -1 = disabled (BF16/FP16, default).
+    // 0 = per-tensor cast with descale=1.0 (unsafe, debug only).
+    // 1 = two-direction (1xDIM row + 128x1 col).
+    // 2 = per-block (block_scale).
+    // 3 = per-head, 4 = per-batch, 5 = per-tensor amax.
+    // Requires SM>=90 (Hopper) and Kernel.CUTLASS dispatch with
+    // attention_dim in {64, 128, 256}. Recommended default when
+    // enabling: 4 (per-batch) -- balances scale-collection cost
+    // vs. accuracy.
+    optional int32 fp8_quant_mode = 16 [default = -1];
 }
 
 message GRPositionalEncoder {
