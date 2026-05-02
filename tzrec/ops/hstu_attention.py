@@ -59,6 +59,7 @@ def hstu_mha(
     enable_tma: bool = False,
     attn_func: Optional[torch.Tensor] = None,
     scaling_seqlen: int = -1,
+    fp8_quant_mode: int = -1,
 ) -> torch.Tensor:
     """HSTU multi-head attention with kernel backend dispatch.
 
@@ -86,10 +87,22 @@ def hstu_mha(
         scaling_seqlen: divisor used to scale the attention output inside
             the kernel. ``-1`` (default) falls back to ``max_seq_len`` so
             the behavior matches the legacy code path.
+        fp8_quant_mode: FP8 quantization mode. ``-1`` (default) keeps
+            the BF16/FP16 path; ``0..5`` enable FP8 with the granularity
+            defined in ``STU.fp8_quant_mode``.  Requires ``Kernel.CUTLASS``
+            (Hopper, SM>=90); ``Kernel.PYTORCH`` runs a per-tensor
+            quantize-dequantize simulation (mode-5 semantics) for tests;
+            ``Kernel.TRITON`` is rejected.
 
     Returns:
         output tensor of shape (total, nheads, hidden_dim).
     """
+    if fp8_quant_mode != -1 and kernel == Kernel.TRITON:
+        raise ValueError(
+            "fp8_quant_mode is not supported on Kernel.TRITON; use "
+            "Kernel.CUTLASS for the Hopper FP8 kernel or Kernel.PYTORCH "
+            "for the simulated reference path."
+        )
     _, H, _ = q.shape
     if not is_fx_tracing():
         torch._assert(max_seq_len > 0, "max_seq_len must be larger than 0")
@@ -141,6 +154,7 @@ def hstu_mha(
             contextual_seq_len=contextual_seq_len,
             attn_func=attn_func,
             scaling_seqlen=scaling_seqlen,
+            quant_mode=fp8_quant_mode,
         )
 
     if kernel == Kernel.TRITON:
@@ -193,6 +207,7 @@ def hstu_mha(
             min_full_attn_seq_len=min_full_attn_seq_len,
             attn_func=attn_func,
             scaling_seqlen=scaling_seqlen,
+            fp8_quant_mode=fp8_quant_mode,
         )
 
 

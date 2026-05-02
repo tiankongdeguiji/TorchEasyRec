@@ -170,6 +170,17 @@ def _decode_attn_func_to_mask(
     return mask & col_valid
 
 
+def _sim_fp8_per_tensor_qdq(t: torch.Tensor) -> torch.Tensor:
+    """Per-tensor FP8 quantize-dequantize (mode 5 semantics).
+
+    Used by the PyTorch reference path to give tests a numeric oracle
+    on machines without the Hopper FP8 kernel.  Mirrors the descale
+    clamp from the wheel's quantize_for_head_batch_tensor helper.
+    """
+    descale = (t.detach().abs().amax() / 448.0).clamp(min=1e-6).to(torch.float32)
+    return (t / descale).to(torch.float8_e4m3fn).to(t.dtype) * descale
+
+
 @torch.fx.wrap
 def pytorch_hstu_mha(
     max_seq_len: int,
@@ -187,6 +198,7 @@ def pytorch_hstu_mha(
     min_full_attn_seq_len: int = 0,
     attn_func: Optional[torch.Tensor] = None,
     scaling_seqlen: int = -1,
+    fp8_quant_mode: int = -1,
 ) -> torch.Tensor:
     """PyTorch reference HSTU attention.
 
@@ -194,9 +206,21 @@ def pytorch_hstu_mha(
     tensor (matching the CUTLASS kernel's arbitrary-mask path).  When
     ``attn_func`` is ``None`` the fixed-mask path uses ``causal`` /
     ``max_attn_len`` / ``contextual_seq_len`` / ``num_targets``.
+
+    ``fp8_quant_mode`` is supported only as a numerical reference for
+    FP8 tests: any value other than ``-1`` triggers a per-tensor
+    quantize-dequantize on Q/K/V before the existing math (mode 5
+    semantics).  We don't replicate the per-block / per-head / per-batch
+    granularities -- mode 5 is the simplest faithful reference and lets
+    tests assert that the CUTLASS-Hopper output stays close to it within
+    FP8 noise tolerances.
     """
     if scaling_seqlen == -1:
         scaling_seqlen = max_seq_len
+    if fp8_quant_mode != -1:
+        q = _sim_fp8_per_tensor_qdq(q)
+        k = _sim_fp8_per_tensor_qdq(k)
+        v = _sim_fp8_per_tensor_qdq(v)
     L, H, _ = q.shape
     V = v.shape[2]
     q, k, v = _pad_qkv(
