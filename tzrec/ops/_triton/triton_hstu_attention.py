@@ -1250,6 +1250,46 @@ def _get_bw_configs() -> List[triton.Config]:
             pre_hook=_bwd_pre_hook,
         ),
     ]
+
+    # On Hopper (sm_90), Triton 3.6's shared-mem layout pass over-allocates for
+    # `tl.dot(tl.trans(k), dqk_trans)` (line 816 in _hstu_attn_bwd_one_block)
+    # with the BLOCK_M ≤ 32 + BLOCK_N ≥ 64 combos below. compute-sanitizer
+    # --tool memcheck on test_attn_triton_long_seqs reports invalid __shared__
+    # reads at offset 0x3c400 (~246 KB), exceeding H20/H100's 228 KB shmem/SM
+    # limit and producing cudaErrorIllegalAddress. The kernel runs cleanly on
+    # the rest of the autotune space and on Ampere (sm_80) for ALL configs.
+    # The list below is the full union from a per-config bisect across the
+    # test_attn_triton_long_seqs hypothesis space (has_max_attn_len ∈ {T,F},
+    # has_multiple_targets ∈ {T,F}, dtype ∈ {bf16, fp16}). TODO: re-enable
+    # when Triton fixes the layout pass for these shapes on sm_90.
+    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9:
+        _hopper_unsafe_bwd_keys = frozenset(
+            {
+                # (BLOCK_M, BLOCK_N, num_stages, num_warps, SP, UNROLL)
+                (16, 64, 1, 4, False, 1),
+                (32, 64, 1, 4, False, 1),
+                (32, 64, 1, 8, False, 1),
+                (32, 128, 2, 8, False, 2),
+                (32, 128, 2, 8, False, 4),
+                (32, 64, 1, 4, True, 1),
+                (32, 64, 2, 4, True, 1),
+                (32, 64, 1, 8, True, 1),
+                (32, 128, 3, 8, True, 1),
+            }
+        )
+        configs = [
+            c
+            for c in configs
+            if (
+                c.kwargs.get("BLOCK_M"),
+                c.kwargs.get("BLOCK_N"),
+                c.num_stages,
+                c.num_warps,
+                c.kwargs.get("SEQUENCE_PARALLEL"),
+                c.kwargs.get("UNROLL"),
+            )
+            not in _hopper_unsafe_bwd_keys
+        ]
     return configs
 
 
