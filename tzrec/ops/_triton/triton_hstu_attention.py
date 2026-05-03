@@ -240,6 +240,35 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
+
+    # Hopper-only filter: same Triton 3.6 sm_90 layout-pass bug as in
+    # _get_bw_configs() also bites the FWD `tl.dot(silu, v)` at line 337
+    # of _hstu_attn_fwd_one_block. compute-sanitizer reports
+    # "Out-of-range shared or local address at _hstu_attn_fwd+0x10f00 in
+    # triton_hstu_attention.py:337" for the configs below when the V tile
+    # is asymmetric (DimV < DimQ). Identified via test_cache hypothesis
+    # bisect across (DimQ, DimV) ∈ {16, 32, 64}². Re-enable when Triton
+    # fixes the layout pass for these shapes on sm_90.
+    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9:
+        _hopper_unsafe_fwd_keys = frozenset(
+            {
+                # (BLOCK_M, BLOCK_N, num_stages, num_warps)
+                (64, 64, 2, 4),
+                (64, 64, 4, 4),
+                (128, 64, 2, 4),
+            }
+        )
+        configs = [
+            c
+            for c in configs
+            if (
+                c.kwargs.get("BLOCK_M"),
+                c.kwargs.get("BLOCK_N"),
+                c.num_stages,
+                c.num_warps,
+            )
+            not in _hopper_unsafe_fwd_keys
+        ]
     return configs
 
 
