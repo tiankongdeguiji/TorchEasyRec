@@ -149,12 +149,14 @@ def cutlass_hstu_mha(
     if scaling_seqlen == -1:
         scaling_seqlen = max_seq_len
 
-    # The wheel's hstu_attn/__init__.py dispatches by
-    # torch.cuda.get_device_capability: sm_80 -> hstu_attn_2_cuda (Ampere),
-    # sm_90 -> hstu_hopper_cuda (Hopper). Pass only kwargs common to both
-    # variants; variant-specific extras (kv_cache/page_*, quant_mode) stay
-    # at their defaults.
-    from hstu_attn import hstu_attn_varlen_func
+    # FBGEMM-nv's hstu wraps the CUTLASS kernels in `torch.ops.fbgemm.*` ops
+    # with `register_fake` metas, so torch.export AOT trace can FakeTensor
+    # through the call without crashing on the pybind11 boundary -- the
+    # older hstu_attn wheel registered varlen_fwd as a bare pybind11
+    # binding, which raised TypeError under non-strict export. Public
+    # entry auto-dispatches by torch.cuda.get_device_capability() to
+    # hstu_varlen_fwd_{80,90}.
+    from hstu import hstu_attn_varlen_func
 
     return hstu_attn_varlen_func(
         q,
@@ -162,8 +164,11 @@ def cutlass_hstu_mha(
         v,
         cu_seqlens,
         cu_seqlens,
-        max_seq_len,
-        max_seq_len,
+        seqused_q=None,
+        seqused_k=None,
+        max_seqlen_q=max_seq_len,
+        max_seqlen_k=max_seq_len,
+        scaling_seqlen=scaling_seqlen,
         num_contexts=num_contexts_tensor,
         num_targets=num_targets_int32,
         target_group_size=1,
@@ -172,5 +177,4 @@ def cutlass_hstu_mha(
         rab=None,
         has_drab=False,
         func=attn_func,
-        scaling_seqlen=scaling_seqlen,
     )
