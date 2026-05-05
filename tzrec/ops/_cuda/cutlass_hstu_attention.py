@@ -15,25 +15,14 @@ import torch
 
 from tzrec.utils.logging_util import logger
 
-# Eagerly load the FBGEMM-nv hstu wheel so its TORCH_LIBRARY_FRAGMENT
-# registers `fbgemm::hstu_varlen_fwd_{80,90}` (C++ schema) before
-# torch._inductor.aoti_load_package() resolves these op names while
-# rehydrating an AOTI artifact at predict time. The hstu_ops_gpu sub-
-# import installs the @torch.library.register_fake metas needed by
-# torch.export's non-strict trace -- the wheel's set_python_module()
-# auto-load path doesn't fire under FX tracing. Wrapped in try/except
-# so tzrec stays importable on hosts without the wheel (e.g. CPU-only
-# CI lanes); the absence is reported when cutlass_hstu_mha is called.
+# Eager hstu import: registers fbgemm::hstu_varlen_fwd_{80,90} schema
+# (needed by aoti_load_package at predict time) and the register_fake
+# metas (needed by torch.export's FX trace). Optional on CPU images.
 try:
     import hstu.hstu_ops_gpu  # noqa: F401
     from hstu import hstu_attn_varlen_func
 except ImportError as e:
-    logger.warning(
-        "fbgemm_gpu_hstu wheel not available (%s); cutlass_hstu_mha will "
-        "raise if called. Install via https://tzrec.oss-accelerate."
-        "aliyuncs.com/third_party/hstu/${DEVICE}/repo.html (cu126/cu129).",
-        e,
-    )
+    logger.debug("fbgemm_gpu_hstu not available: %s", e)
     hstu_attn_varlen_func = None  # type: ignore[assignment]
 
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
