@@ -11,7 +11,17 @@
 
 from typing import Optional
 
+import hstu.hstu_ops_gpu  # noqa: F401
 import torch
+
+# Eagerly load the FBGEMM-nv hstu wheel so its TORCH_LIBRARY_FRAGMENT
+# registers `fbgemm::hstu_varlen_fwd_{80,90}` (C++ schema) before
+# torch._inductor.aoti_load_package() resolves these op names while
+# rehydrating an AOTI artifact at predict time. The hstu_ops_gpu sub-
+# import installs the @torch.library.register_fake metas needed by
+# torch.export's non-strict trace -- the wheel's set_python_module()
+# auto-load path doesn't fire under FX tracing.
+from hstu import hstu_attn_varlen_func  # noqa: F401
 
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
 
@@ -148,15 +158,6 @@ def cutlass_hstu_mha(
 
     if scaling_seqlen == -1:
         scaling_seqlen = max_seq_len
-
-    # FBGEMM-nv's hstu wraps the CUTLASS kernels in `torch.ops.fbgemm.*` ops
-    # with `register_fake` metas, so torch.export AOT trace can FakeTensor
-    # through the call without crashing on the pybind11 boundary -- the
-    # older hstu_attn wheel registered varlen_fwd as a bare pybind11
-    # binding, which raised TypeError under non-strict export. Public
-    # entry auto-dispatches by torch.cuda.get_device_capability() to
-    # hstu_varlen_fwd_{80,90}.
-    from hstu import hstu_attn_varlen_func
 
     return hstu_attn_varlen_func(
         q,
