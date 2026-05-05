@@ -33,6 +33,7 @@ jobs:
             -e CUDA_HOME=/usr/local/cuda-12 \
             -e CI_HYPOTHESIS=true \
             -e TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor \
+            -e DISABLE_MMA_V3=1 \
             -v "$WORK_ROOT":/__w \
             -v "$EXTERNALS_ROOT":/__e:ro \
             -v "$WORK_ROOT/_temp":/__w/_temp \
