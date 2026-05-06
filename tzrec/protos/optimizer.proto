@@ -11,8 +11,8 @@ message SparseOptimizer {
         FusedPartialRowWiseLAMBOptimizer partial_rowwise_lamb_optimizer = 6;
         FusedPartialRowWiseAdamOptimizer partial_rowwise_adam_optimizer = 7;
         FusedRowWiseAdagradOptimizer rowwise_adagrad_optimizer = 8;
-        FusedAdaDeltaOptimizer adadelta_optimizer = 9;
-        FusedRMSPropOptimizer rmsprop_optimizer = 10;
+        FusedAdadeltaOptimizer adadelta_optimizer = 9;
+        FusedRMSpropOptimizer rmsprop_optimizer = 10;
     }
     oneof learning_rate {
         ConstantLR constant_learning_rate = 101;
@@ -29,8 +29,8 @@ message DenseOptimizer {
         AdagradOptimizer adagrad_optimizer = 2;
         AdamOptimizer adam_optimizer = 3;
         AdamWOptimizer adamw_optimizer = 4;
-        AdaDeltaOptimizer adadelta_optimizer = 5;
-        RMSPropOptimizer rmsprop_optimizer = 6;
+        AdadeltaOptimizer adadelta_optimizer = 5;
+        RMSpropOptimizer rmsprop_optimizer = 6;
     }
     oneof learning_rate {
         ConstantLR constant_learning_rate = 101;
@@ -48,8 +48,8 @@ message PartOptimizer {
         AdagradOptimizer adagrad_optimizer = 2;
         AdamOptimizer adam_optimizer = 3;
         AdamWOptimizer adamw_optimizer = 4;
-        AdaDeltaOptimizer adadelta_optimizer = 6;
-        RMSPropOptimizer rmsprop_optimizer = 7;
+        AdadeltaOptimizer adadelta_optimizer = 6;
+        RMSpropOptimizer rmsprop_optimizer = 7;
     }
     required string regex_pattern = 5;
     oneof learning_rate {
@@ -132,7 +132,7 @@ message FusedRowWiseAdagradOptimizer {
     optional float max_gradient = 5 [default = 1.0];
 }
 
-message FusedAdaDeltaOptimizer {
+message FusedAdadeltaOptimizer {
     required float lr = 1 [default = 0.002];
     optional float rho = 2 [default = 0.95];
     optional float eps = 3 [default = 1e-6];
@@ -141,7 +141,7 @@ message FusedAdaDeltaOptimizer {
     optional float max_gradient = 6 [default = 1.0];
 }
 
-message FusedRMSPropOptimizer {
+message FusedRMSpropOptimizer {
     required float lr = 1 [default = 0.002];
     optional float alpha = 2 [default = 0.99];
     optional float eps = 3 [default = 1e-8];
@@ -187,14 +187,14 @@ message AdamWOptimizer {
     optional bool fused = 7 [default = false];
 }
 
-message AdaDeltaOptimizer {
+message AdadeltaOptimizer {
     required float lr = 1 [default = 0.002];
     optional float rho = 2 [default = 0.95];
     optional float eps = 3 [default = 1e-6];
     optional float weight_decay = 4 [default = 0.0];
 }
 
-message RMSPropOptimizer {
+message RMSpropOptimizer {
     required float lr = 1 [default = 0.002];
     optional float alpha = 2 [default = 0.99];
     optional float eps = 3 [default = 1e-8];
