@@ -24,7 +24,7 @@ from tzrec.datasets.dataset import create_dataloader
 from tzrec.main import _create_features
 from tzrec.tests import utils
 from tzrec.utils import checkpoint_util, config_util, dynamicemb_util
-from tzrec.utils.test_util import dfs_are_close, gpu_unavailable
+from tzrec.utils.test_util import dfs_are_close, gpu_unavailable, mark_ci_scope
 
 
 class RankIntegrationTest(unittest.TestCase):
@@ -1012,6 +1012,7 @@ class RankIntegrationTest(unittest.TestCase):
             self.assertEqual(acc_cfg["cand_seq_pk"], "cand_seq")
             self.assertEqual(acc_cfg["ENABLE_AOT"], "1")
 
+    @mark_ci_scope("h20")
     @unittest.skipIf(*gpu_unavailable)
     def test_rank_dlrm_hstu_train_eval_export(self):
         # Default path: UNIFIED_AOT defaults to disabled, uses legacy
@@ -1025,6 +1026,7 @@ class RankIntegrationTest(unittest.TestCase):
             )
         )
 
+    @mark_ci_scope("h20")
     @unittest.skipIf(*gpu_unavailable)
     def test_rank_dlrm_hstu_train_eval_export_unified_aot(self):
         # Verify the unified AOTI export path (UNIFIED_AOT=1) for DLRM-HSTU.
@@ -1042,6 +1044,7 @@ class RankIntegrationTest(unittest.TestCase):
             acc_cfg = json.load(f)
             self.assertEqual(acc_cfg.get("UNIFIED_AOT"), "1")
 
+    @mark_ci_scope("h20")
     @unittest.skipIf(*gpu_unavailable)
     def test_rank_dlrm_hstu_cutlass_train_eval_export(self):
         self.success = utils.test_train_eval(
@@ -1070,6 +1073,7 @@ class RankIntegrationTest(unittest.TestCase):
             )
         self.assertTrue(self.success)
 
+    @mark_ci_scope("h20")
     @unittest.skipIf(*gpu_unavailable)
     def test_rank_ultra_hstu_cutlass_train_eval_export(self):
         self.success = utils.test_train_eval(
@@ -1170,6 +1174,7 @@ class RankIntegrationTest(unittest.TestCase):
             in weight_json
         )
 
+    @mark_ci_scope("h20")
     @unittest.skipIf(*gpu_unavailable)
     def test_dlrm_hstu_rtp_train_export(self):
         self.success = utils.test_train_eval(

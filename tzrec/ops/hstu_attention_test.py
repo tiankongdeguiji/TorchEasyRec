@@ -28,6 +28,7 @@ from tzrec.utils.test_util import (
     get_test_dtypes,
     get_test_enable_tma,
     gpu_unavailable,
+    mark_ci_scope,
 )
 from tzrec.utils.test_util import hypothesis_settings as settings
 
@@ -306,6 +307,7 @@ def test_delta_attn(
     )
 
 
+@mark_ci_scope("h20")
 class HSTUAttentionTest(unittest.TestCase):
     def teardown_example(self, example):
         gc.collect()
