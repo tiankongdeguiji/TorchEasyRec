@@ -29,6 +29,8 @@ message DenseOptimizer {
         AdagradOptimizer adagrad_optimizer = 2;
         AdamOptimizer adam_optimizer = 3;
         AdamWOptimizer adamw_optimizer = 4;
+        AdaDeltaOptimizer adadelta_optimizer = 5;
+        RMSPropOptimizer rmsprop_optimizer = 6;
     }
     oneof learning_rate {
         ConstantLR constant_learning_rate = 101;
@@ -46,6 +48,8 @@ message PartOptimizer {
         AdagradOptimizer adagrad_optimizer = 2;
         AdamOptimizer adam_optimizer = 3;
         AdamWOptimizer adamw_optimizer = 4;
+        AdaDeltaOptimizer adadelta_optimizer = 6;
+        RMSPropOptimizer rmsprop_optimizer = 7;
     }
     required string regex_pattern = 5;
     oneof learning_rate {
@@ -181,6 +185,22 @@ message AdamWOptimizer {
     optional float eps = 5 [default = 1e-8];
     optional bool amsgrad = 6 [default = false];
     optional bool fused = 7 [default = false];
+}
+
+message AdaDeltaOptimizer {
+    required float lr = 1 [default = 0.002];
+    optional float rho = 2 [default = 0.95];
+    optional float eps = 3 [default = 1e-6];
+    optional float weight_decay = 4 [default = 0.0];
+    optional bool fused = 5 [default = false];
+}
+
+message RMSPropOptimizer {
+    required float lr = 1 [default = 0.002];
+    optional float alpha = 2 [default = 0.99];
+    optional float eps = 3 [default = 1e-8];
+    optional float weight_decay = 4 [default = 0.0];
+    optional bool fused = 5 [default = false];
 }
 
 message ConstantLR {
