@@ -59,11 +59,11 @@ def _force_mma_v2():  # pyre-ignore[3]
     saved_disable = os.environ.get("DISABLE_MMA_V3")
     saved_cache_dir = os.environ.get("TRITON_CACHE_DIR")
     base_cache = saved_cache_dir or os.path.expanduser("~/.triton/cache")
-    os.environ["DISABLE_MMA_V3"] = "1"
-    os.environ["TRITON_CACHE_DIR"] = base_cache + _DISABLE_V3_CACHE_SUFFIX
-    clear_triton_caches(_t._hstu_attn_fwd)
-    clear_triton_caches(_t._hstu_attn_bwd)
     try:
+        os.environ["DISABLE_MMA_V3"] = "1"
+        os.environ["TRITON_CACHE_DIR"] = base_cache + _DISABLE_V3_CACHE_SUFFIX
+        clear_triton_caches(_t._hstu_attn_fwd)
+        clear_triton_caches(_t._hstu_attn_bwd)
         yield
     finally:
         if saved_disable is None:
