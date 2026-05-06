@@ -960,7 +960,7 @@ class RankIntegrationTest(unittest.TestCase):
         self.assertTrue(dfs_are_close(df1, df2, 1e-6))
 
     def _test_rank_dlrm_hstu_train_eval_export(self, export_env_str: str):
-        # DISABLE_MMA_V3=1: Triton 3.6 sm_90 WGMMA bug; see faq Q15.
+        # DISABLE_MMA_V3=1: Triton 3.6 sm_90 WGMMA bug
         hstu_env = "DISABLE_MMA_V3=1"
         self.success = utils.test_train_eval(
             "tzrec/tests/configs/dlrm_hstu_kuairand_1k.config",
