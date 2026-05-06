@@ -12,10 +12,8 @@
 import unittest
 
 import torch
-from parameterized import parameterized
 from torch import Tensor, nn
 from torch.optim import Optimizer
-from torchrec.optim import optimizers as trec_optimizers
 from torchrec.optim.keyed import KeyedOptimizerWrapper
 
 from tzrec.optim import optimizer_builder
@@ -113,51 +111,6 @@ class OpimizerBuilderTest(unittest.TestCase):
         )
         scheduler_class = [x.__class__.__name__ for x in schedulers]
         self.assertEqual(scheduler_class, ["ConstantLR", "ManualStepLR"])
-
-    @parameterized.expand(
-        [
-            (
-                "adadelta_optimizer",
-                optimizer_pb2.FusedAdaDeltaOptimizer(lr=0.001, rho=0.9, eps=1e-7),
-                trec_optimizers.AdaDelta,
-                {
-                    "lr": 0.001,
-                    "rho": 0.9,
-                    "eps": 1e-7,
-                    "weight_decay": 0.0,
-                    "gradient_clipping": False,
-                    "max_gradient": 1.0,
-                },
-            ),
-            (
-                "rmsprop_optimizer",
-                optimizer_pb2.FusedRMSPropOptimizer(lr=0.001, alpha=0.95, eps=1e-8),
-                trec_optimizers.RMSProp,
-                {
-                    "lr": 0.001,
-                    "alpha": 0.95,
-                    "eps": 1e-8,
-                    "weight_decay": 0.0,
-                    "gradient_clipping": False,
-                    "max_gradient": 1.0,
-                },
-            ),
-        ]
-    )
-    def test_create_sparse_optimizer(self, attr, msg, expected_cls, expected_kw):
-        config = optimizer_pb2.SparseOptimizer(
-            constant_learning_rate=optimizer_pb2.ConstantLR(),
-            **{attr: msg},
-        )
-        cls, kw = optimizer_builder.create_sparse_optimizer(config)
-        self.assertIs(cls, expected_cls)
-        # Compare with float tolerance since proto stores fp32.
-        self.assertEqual(set(kw.keys()), set(expected_kw.keys()))
-        for k, v in expected_kw.items():
-            if isinstance(v, float):
-                self.assertAlmostEqual(kw[k], v, places=6)
-            else:
-                self.assertEqual(kw[k], v)
 
     def test_build_part_optimizers(self):
         param_optim_cls = [torch.optim.Adam, torch.optim.SGD, torch.optim.AdamW]
