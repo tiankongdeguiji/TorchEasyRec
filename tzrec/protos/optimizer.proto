@@ -192,7 +192,6 @@ message AdaDeltaOptimizer {
     optional float rho = 2 [default = 0.95];
     optional float eps = 3 [default = 1e-6];
     optional float weight_decay = 4 [default = 0.0];
-    optional bool fused = 5 [default = false];
 }
 
 message RMSPropOptimizer {
@@ -200,7 +199,6 @@ message RMSPropOptimizer {
     optional float alpha = 2 [default = 0.99];
     optional float eps = 3 [default = 1e-8];
     optional float weight_decay = 4 [default = 0.0];
-    optional bool fused = 5 [default = false];
 }
 
 message ConstantLR {

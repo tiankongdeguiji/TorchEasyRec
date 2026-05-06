@@ -126,14 +126,8 @@ def create_dense_optimizer(
         optimizer_kwargs["betas"] = (beta1, beta2)
         return torch.optim.AdamW, optimizer_kwargs
     elif optimizer_type == "adadelta_optimizer":
-        # torch.optim.Adadelta does not accept `fused` (as of torch 2.11);
-        # the proto field is kept for forward-compat but stripped here.
-        optimizer_kwargs.pop("fused", None)
         return torch.optim.Adadelta, optimizer_kwargs
     elif optimizer_type == "rmsprop_optimizer":
-        # torch.optim.RMSprop does not accept `fused` (as of torch 2.11);
-        # the proto field is kept for forward-compat but stripped here.
-        optimizer_kwargs.pop("fused", None)
         return torch.optim.RMSprop, optimizer_kwargs
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
