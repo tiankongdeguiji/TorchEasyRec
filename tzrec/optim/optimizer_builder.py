@@ -79,6 +79,8 @@ def create_sparse_optimizer(
                 "fbgemm-gpu wheels (with the AdaDelta sparse-embedding "
                 "kernel) and reinstall."
             )
+        # FBGEMM reuses the beta1 OptimizerArgs slot for AdaDelta's rho.
+        optimizer_kwargs["beta1"] = optimizer_kwargs.pop("rho")
         return optimizers.AdaDelta, optimizer_kwargs
     elif optimizer_type == "rmsprop_optimizer":
         if not hasattr(optimizers, "RMSProp"):
@@ -89,6 +91,8 @@ def create_sparse_optimizer(
                 "fbgemm-gpu wheels (with the RMSProp sparse-embedding "
                 "kernel) and reinstall."
             )
+        # FBGEMM reuses the beta1 OptimizerArgs slot for RMSProp's alpha.
+        optimizer_kwargs["beta1"] = optimizer_kwargs.pop("alpha")
         return optimizers.RMSProp, optimizer_kwargs
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
