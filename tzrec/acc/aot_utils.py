@@ -55,6 +55,19 @@ def _aoti_compile_cfg() -> Dict[str, Any]:
         cfg["max_autotune"] = True
         cfg["max_autotune_gemm"] = True
         cfg["coordinate_descent_tuning"] = True
+    # TZREC_CUDA_GRAPHS: opt-in cudagraphs at AOTI compile. Big win on
+    # Blackwell+cu13 where cudaStreamIsCapturing is ~53x more expensive
+    # than Ada+cu12; net loss on Ada+cu12 where stream capture is already
+    # cheap. ENABLE_TMA=0 is required: jhk/blackwell finding f2c5fee + 6232611
+    # established that triton.cudagraphs interacts poorly with
+    # cpp_wrapper + TensorDescriptor when the HSTU TMA path is active.
+    # Composed gate: cudagraphs ON iff env=1 AND ENABLE_TMA=0.
+    if (
+        os.environ.get("TZREC_CUDA_GRAPHS", "0").lower() in ("1", "true", "yes")
+        and os.environ.get("ENABLE_TMA", "0") == "0"
+    ):
+        cfg["triton.cudagraphs"] = True
+        cfg["assume_aligned_inputs"] = True
     return cfg
 
 
