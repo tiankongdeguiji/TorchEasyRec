@@ -41,6 +41,20 @@ def _aoti_compile_cfg() -> Dict[str, Any]:
     }
     if is_autotune_with_sample_inputs():
         cfg["triton.autotune_with_sample_inputs"] = True
+    # TZREC_MAX_AUTOTUNE: exhaustive autotune at AOTI compile. Heuristic-picked
+    # Triton block sizes are poor on newer SM families (e.g. sm_120 Blackwell);
+    # exhaustive search per kernel fixes that but is much slower at export time,
+    # so gated by env var.
+    # NOTE: triton.use_tensor_descriptor is INTENTIONALLY OMITTED — Inductor
+    # 2.11 has a bug ('<= not supported between TensorDescriptor and int')
+    # during codegen for the HSTU graph. The user-defined HSTU Triton kernel
+    # uses its own TMA branch via ENABLE_TMA env, which is unaffected by this.
+    # NOTE: triton.cudagraphs is NOT set here — it has its own independent env
+    # var TZREC_CUDA_GRAPHS handled by a separate block.
+    if os.environ.get("TZREC_MAX_AUTOTUNE", "0").lower() in ("1", "true", "yes"):
+        cfg["max_autotune"] = True
+        cfg["max_autotune_gemm"] = True
+        cfg["coordinate_descent_tuning"] = True
     return cfg
 
 
