@@ -171,7 +171,13 @@ def is_autotune_with_sample_inputs() -> bool:
     (``rand_strided``).
     """
     val = os.environ.get("AOTI_AUTOTUNE_WITH_SAMPLE_INPUTS")
-    return bool(val) and val[0] == "1"
+    if bool(val) and val[0] == "1":
+        return True
+    # TZREC_AUTOTUNE_WITH_SAMPLE_INPUTS: alias for the upstream env name
+    # used by perf-debug scripts that set TZREC_-namespaced env vars
+    # uniformly. Same effect — enables Inductor sample-input autotune.
+    alias = os.environ.get("TZREC_AUTOTUNE_WITH_SAMPLE_INPUTS", "")
+    return alias.lower() in ("1", "true", "yes")
 
 
 def is_debug_trt() -> bool:
