@@ -81,6 +81,89 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                     pre_hook=_host_descriptor_pre_hook,
                 )
             ]
+        # TZREC_R16_SM120_CURATED: opt-in 10-config curated set for
+        # Blackwell sm_120 HSTU. When env=1, returns 10 hand-picked configs
+        # (BM=16/32 × BN=16/32/64 small-tile family) that R17 empirically
+        # validated as Pareto-optimal on Blackwell. Default 29 configs all
+        # have BN >= 32 and NS >= 2; on sm_120 the fma.f32x2 codegen
+        # pathology makes BN >= 32 configs spill heavily → broken perf.
+        # Curated 10 configs avoid that path.
+        # OPT-IN ONLY — NOT auto-active. Users on Blackwell must explicitly
+        # set TZREC_R16_SM120_CURATED=1 to get the good defaults; otherwise
+        # they fall back to the default 29 (broken on Blackwell HSTU).
+        # R15_FULL_GRID / R15_AUGMENTED_CONFIGS preempt this branch if set.
+        # Ported from L20N hand-patch (R16 saga). See R17 closure for the
+        # empirical validation.
+        if os.environ.get("TZREC_R16_SM120_CURATED", "0") == "1" and not (
+            os.environ.get("R15_FULL_GRID") or os.environ.get("R15_AUGMENTED_CONFIGS")
+        ):
+            return [
+                # TF32-off winners (cell_0000/0100): tiny tile + NS=3 sweet spot
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 16},
+                    num_stages=3,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 16},
+                    num_stages=4,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 16},
+                    num_stages=2,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                # TF32-on winners (cell_1000): small tile + no-pipeline mma path
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 16},
+                    num_stages=1,
+                    num_warps=2,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 16},
+                    num_stages=2,
+                    num_warps=2,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                # TF32-on B=2 winner (cell_1100): wider BN for small batches
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 64},
+                    num_stages=1,
+                    num_warps=8,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 32},
+                    num_stages=1,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 16, "BLOCK_N": 32},
+                    num_stages=2,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                # Adjacent tile-area variants — robustness across seq-length
+                # / head-count distributions
+                triton.Config(
+                    {"BLOCK_M": 32, "BLOCK_N": 16},
+                    num_stages=2,
+                    num_warps=4,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 32, "BLOCK_N": 16},
+                    num_stages=3,
+                    num_warps=8,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+            ]
         configs = [
             triton.Config(
                 {"BLOCK_M": 16, "BLOCK_N": 32},
