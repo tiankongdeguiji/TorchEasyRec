@@ -14,6 +14,7 @@
 # thanks to their public work.
 
 
+import os
 from typing import List, Optional, Tuple
 
 import torch
@@ -240,6 +241,36 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
+        # TZREC_LARGE_TILE_EXTRA_CONFIGS: opt-in. Adds 2 Blackwell-targeted
+        # large-tile candidates (BLOCK_M=128 BLOCK_N=64/128, num_stages=3,
+        # num_warps=8). Default 29 configs on the existing list already
+        # cover BLOCK_M=128/BLOCK_N=64 at num_stages=4; these num_stages=3
+        # variants give autotune at AOTI compile-time an alternative
+        # pipeline depth that benchmarks differently on sm_120. Ported
+        # (refined) from jhk/blackwell-autotune commits 991ff76 + a33017e.
+        # NOTE: R17 empirically showed these large-tile configs don't win on
+        # Blackwell HSTU once R16-curated tile is available. They sit dormant
+        # by default. Opt-in retains the option for non-HSTU kernels or future
+        # archs.
+        if os.environ.get("TZREC_LARGE_TILE_EXTRA_CONFIGS", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            configs += [
+                triton.Config(
+                    {"BLOCK_M": 128, "BLOCK_N": 64},
+                    num_stages=3,
+                    num_warps=8,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+                triton.Config(
+                    {"BLOCK_M": 128, "BLOCK_N": 128},
+                    num_stages=3,
+                    num_warps=8,
+                    pre_hook=_host_descriptor_pre_hook,
+                ),
+            ]
     return configs
 
 
