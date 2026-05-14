@@ -68,6 +68,15 @@ def _aoti_compile_cfg() -> Dict[str, Any]:
     ):
         cfg["triton.cudagraphs"] = True
         cfg["assume_aligned_inputs"] = True
+    # TZREC_UNBACKED_FP64=1 RESTORES fp64 for unbacked floats (overrides
+    # the hardcoded fp32 default set above). Useful for A/B testing,
+    # reproducing the historical pre-PR #498 fp64-alpha behavior, or
+    # debugging precision-sensitivity issues. Default (env unset) keeps
+    # PR #498's fp32 default which is the right production choice for
+    # HSTU (avoids Newton-Raphson tl.sigmoid on Ada/Ampere/Blackwell
+    # where there is no native ex2.f64).
+    if os.environ.get("TZREC_UNBACKED_FP64", "0").lower() in ("1", "true", "yes"):
+        cfg["_use_fp64_for_unbacked_floats"] = True
     return cfg
 
 
