@@ -257,6 +257,62 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                 pre_hook=_host_descriptor_pre_hook,
             ),
         ]
+        # R15_AUGMENTED_CONFIGS: opt-in. Appends 19 R15-discovered survivor
+        # configs (all with BLOCK_N=16 or num_stages=1) to the default 29.
+        # These tiles are sm_120-friendly (avoid the fma.f32x2 register-
+        # pressure pathology) but are entirely disjoint from the default.
+        # See experiments/jhk/perf_l20n_knobmatrix_summary_v2.md Round 15.
+        if os.environ.get("R15_AUGMENTED_CONFIGS", "0") == "1":
+            # Tuples (BM, BN, NS, NW) for the 19 survivors
+            _r15_aug = [
+                (32, 16, 1, 4),
+                (64, 16, 1, 8),
+                (32, 32, 1, 8),
+                (32, 32, 2, 8),
+                (32, 16, 2, 8),
+                (32, 16, 3, 8),
+                (32, 16, 4, 8),
+                (32, 64, 1, 8),
+                (32, 32, 3, 8),
+                (64, 16, 2, 8),
+                (64, 16, 3, 8),
+                (64, 16, 4, 8),
+                (32, 16, 2, 4),
+                (32, 16, 3, 4),
+                (32, 16, 4, 4),
+                (128, 16, 1, 8),
+                (32, 32, 1, 4),
+                (64, 32, 1, 8),
+                (32, 16, 1, 2),
+            ]
+            for _bm, _bn, _ns, _nw in _r15_aug:
+                configs.append(
+                    triton.Config(
+                        {"BLOCK_M": _bm, "BLOCK_N": _bn},
+                        num_stages=_ns,
+                        num_warps=_nw,
+                        pre_hook=_host_descriptor_pre_hook,
+                    )
+                )
+        # R15_FULL_GRID: opt-in. REPLACES configs with full 4x4x3x4 = 192
+        # Cartesian product. Used for exhaustive Pareto frontier exploration
+        # (the R15FG / R17 sweep). Autotune wall increases dramatically;
+        # not for production. See R17 closure: R15FG winner sits alone on
+        # the Pareto frontier — broad sweeps are no longer necessary.
+        if os.environ.get("R15_FULL_GRID", "0") == "1":
+            configs = []
+            for _bm in (16, 32, 64, 128):
+                for _bn in (16, 32, 64, 128):
+                    for _nw in (2, 4, 8):
+                        for _ns in (1, 2, 3, 4):
+                            configs.append(
+                                triton.Config(
+                                    {"BLOCK_M": _bm, "BLOCK_N": _bn},
+                                    num_stages=_ns,
+                                    num_warps=_nw,
+                                    pre_hook=_host_descriptor_pre_hook,
+                                )
+                            )
         # TZREC_LARGE_TILE_EXTRA_CONFIGS: opt-in. Adds 2 Blackwell-targeted
         # large-tile candidates (BLOCK_M=128 BLOCK_N=64/128, num_stages=3,
         # num_warps=8). Default 29 configs on the existing list already
