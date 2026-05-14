@@ -31,6 +31,18 @@ from tzrec.ops.utils import (
 )
 
 
+def _env_true(name: str) -> bool:
+    """Truthy env-var helper: ``"1"``/``"true"``/``"yes"`` (case-insensitive).
+
+    Treats everything else — including ``"0"``, ``"false"``, ``""``, or
+    unset — as False. Plain ``os.environ.get(name)`` returns a non-empty
+    string (truthy) for ``NAME=0``, which silently breaks
+    ``if os.environ.get(...)`` style checks when callers set ``NAME=0``
+    to mean "off". Using this helper everywhere avoids that footgun.
+    """
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+
+
 def _host_descriptor_pre_hook(nargs):
     if not isinstance(nargs["Q"], TensorDescriptor):
         return
@@ -94,8 +106,8 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         # R15_FULL_GRID / R15_AUGMENTED_CONFIGS preempt this branch if set.
         # Ported from L20N hand-patch (R16 saga). See R17 closure for the
         # empirical validation.
-        if os.environ.get("TZREC_R16_SM120_CURATED", "0") == "1" and not (
-            os.environ.get("R15_FULL_GRID") or os.environ.get("R15_AUGMENTED_CONFIGS")
+        if _env_true("TZREC_R16_SM120_CURATED") and not (
+            _env_true("R15_FULL_GRID") or _env_true("R15_AUGMENTED_CONFIGS")
         ):
             return [
                 # TF32-off winners (cell_0000/0100): tiny tile + NS=3 sweet spot
@@ -345,7 +357,7 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         # These tiles are sm_120-friendly (avoid the fma.f32x2 register-
         # pressure pathology) but are entirely disjoint from the default.
         # See experiments/jhk/perf_l20n_knobmatrix_summary_v2.md Round 15.
-        if os.environ.get("R15_AUGMENTED_CONFIGS", "0") == "1":
+        if _env_true("R15_AUGMENTED_CONFIGS"):
             # Tuples (BM, BN, NS, NW) for the 19 survivors
             _r15_aug = [
                 (32, 16, 1, 4),
@@ -382,7 +394,7 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         # (the R15FG / R17 sweep). Autotune wall increases dramatically;
         # not for production. See R17 closure: R15FG winner sits alone on
         # the Pareto frontier — broad sweeps are no longer necessary.
-        if os.environ.get("R15_FULL_GRID", "0") == "1":
+        if _env_true("R15_FULL_GRID"):
             configs = []
             for _bm in (16, 32, 64, 128):
                 for _bn in (16, 32, 64, 128):
