@@ -65,6 +65,22 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                                 )
                             )
     else:
+        # R16_SINGLE_CONFIG: opt-in force-single-config override. When set to
+        # "BM,BN,NW,NS" (e.g. "16,16,4,3"), _get_fw_configs returns exactly
+        # one triton.Config matching the tuple — autotune has nothing to pick
+        # from. Used by perf-debug scripts to force a specific tile choice
+        # (e.g., R18-1 cross-host force-tile experiment).
+        _r16_scfg = os.environ.get("R16_SINGLE_CONFIG", "")
+        if _r16_scfg:
+            _bm, _bn, _nw, _ns = (int(x) for x in _r16_scfg.split(","))
+            return [
+                triton.Config(
+                    {"BLOCK_M": _bm, "BLOCK_N": _bn},
+                    num_stages=_ns,
+                    num_warps=_nw,
+                    pre_hook=_host_descriptor_pre_hook,
+                )
+            ]
         configs = [
             triton.Config(
                 {"BLOCK_M": 16, "BLOCK_N": 32},
