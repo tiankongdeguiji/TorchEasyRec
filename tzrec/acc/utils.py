@@ -262,12 +262,20 @@ def mixed_precision_to_dtype(mixed_precision: Optional[str]) -> Optional[torch.d
 def mixed_precision_for_export(pipeline_config: EasyRecConfig) -> str:
     """Resolve mixed_precision for export.
 
-    Compares ``train_config.mixed_precision`` with
-    ``export_config.mixed_precision``; logs a warning when they differ.
-    Returns ``export_config.mixed_precision`` — does not fall back to
-    train_config. The export-time AMP intent must be expressed
-    explicitly on ``export_config``.
+    Precedence: ``TZREC_MIXED_PRECISION`` env var (when set) overrides
+    ``export_config.mixed_precision``; otherwise compares
+    ``train_config.mixed_precision`` with ``export_config.mixed_precision``
+    and logs a warning when they differ, then returns
+    ``export_config.mixed_precision`` (no fall back to train_config —
+    export-time AMP intent must be expressed explicitly).
+
+    The env-var override lets us request e.g. bf16 AMP at export time
+    without modifying pipeline.config (useful for Blackwell BF16 tensor
+    cores which are markedly faster than FP32 SIMT for dense GEMMs).
     """
+    env_mp = os.environ.get("TZREC_MIXED_PRECISION", "")
+    if env_mp:
+        return env_mp
     train_mp = pipeline_config.train_config.mixed_precision
     export_mp = (
         pipeline_config.export_config.mixed_precision
