@@ -271,6 +271,27 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
                     pre_hook=_host_descriptor_pre_hook,
                 ),
             ]
+
+    # TZREC_HSTU_MAXNREG_255: opt-in. Triton's compiler emits fewer registers
+    # per thread for sm_120 (Blackwell) than sm_89 (Ada) on this kernel —
+    # observed 168 vs 255 in production kineto traces. Lower register count
+    # likely causes spilling to local memory, making per-block compute much
+    # slower on Blackwell. Adds a maxnreg=255 variant of every existing
+    # config so autotune can try high-register versions.
+    # Ported from jhk/blackwell-autotune commit dc15ebd.
+    if os.environ.get("TZREC_HSTU_MAXNREG_255", "0").lower() in ("1", "true", "yes"):
+        extra = []
+        for c in configs:
+            extra.append(
+                triton.Config(
+                    dict(c.kwargs),
+                    num_stages=c.num_stages,
+                    num_warps=c.num_warps,
+                    maxnreg=255,
+                    pre_hook=c.pre_hook,
+                )
+            )
+        configs += extra
     return configs
 
 
