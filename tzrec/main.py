@@ -314,6 +314,58 @@ def _log_train(
                 summary_writer.add_scalar(f"metric/{k}", v, step)
 
 
+def _memdbg_log_planner_estimate(planner: object, device: object, rank: int) -> None:
+    """Log the planner's storage-reservation breakdown (TZREC_MEM_DEBUG)."""
+
+    def _gb(storage: object) -> str:
+        if storage is None:
+            return "n/a"
+        return "hbm=%.3f GB ddr=%.3f GB" % (
+            (getattr(storage, "hbm", 0) or 0) / 1e9,
+            (getattr(storage, "ddr", 0) or 0) / 1e9,
+        )
+
+    sr = getattr(planner, "_storage_reservation", None)
+    topo = getattr(planner, "_topology", None)
+    total_hbm = "n/a"
+    if topo is not None and getattr(topo, "devices", None):
+        total_hbm = "%.3f GB" % ((topo.devices[0].storage.hbm or 0) / 1e9)
+    dense = getattr(sr, "_dense_storage", None)
+    kjt = getattr(sr, "_kjt_storage", None)
+    reserved_topo = getattr(sr, "_last_reserved_topology", None)
+    avail = "n/a"
+    if reserved_topo is not None and getattr(reserved_topo, "devices", None):
+        avail = "%.3f GB" % ((reserved_topo.devices[0].storage.hbm or 0) / 1e9)
+    pct = getattr(sr, "_percentage", None)
+    logger.info(
+        "[MEMDBG] rank=%d PLANNER topo_hbm_per_dev=%s reserve_pct=%s "
+        "dense_storage(per_dev)=[%s] kjt_storage(per_dev)=[%s] "
+        "=> hbm_left_for_embeddings(per_dev)=%s"
+        % (rank, total_hbm, pct, _gb(dense), _gb(kjt), avail)
+    )
+
+
+def _memdbg_step(i_step: int, when: str) -> None:
+    """Log peak/current HBM around one training step (TZREC_MEM_DEBUG)."""
+    if not torch.cuda.is_available():
+        return
+    device = torch.cuda.current_device()
+    rank = int(os.environ.get("RANK", 0))
+    torch.cuda.synchronize(device)
+    logger.info(
+        "[MEMDBG] rank=%d step=%d %s peak_allocated=%.3f GB peak_reserved=%.3f GB "
+        "current_allocated=%.3f GB"
+        % (
+            rank,
+            i_step,
+            when,
+            torch.cuda.max_memory_allocated(device) / 1e9,
+            torch.cuda.max_memory_reserved(device) / 1e9,
+            torch.cuda.memory_allocated(device) / 1e9,
+        )
+    )
+
+
 def _train_and_evaluate(
     model: nn.Module,
     optimizer: optim.Optimizer,
@@ -430,7 +482,16 @@ def _train_and_evaluate(
             if i_step <= skip_steps:
                 continue
             try:
+                if os.environ.get("TZREC_MEM_DEBUG"):
+                    _memdbg_step(i_step, "before_progress")
                 losses, predictions, batch = pipeline.progress(train_iterator)
+                if os.environ.get("TZREC_MEM_DEBUG"):
+                    _memdbg_step(i_step, "after_progress")
+                    torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+                    _memdbg_steps = int(os.environ.get("TZREC_MEM_DEBUG_STEPS", "3"))
+                    if i_step >= _memdbg_steps:
+                        logger.info("[MEMDBG] reached TZREC_MEM_DEBUG_STEPS, exiting")
+                        return
                 # Update dataloader checkpoint state
                 checkpoint_util.update_dataloder_state(
                     dataloader_state, batch.checkpoint_info
@@ -673,12 +734,27 @@ def train_and_evaluate(
     if is_rank_zero:
         logger.info(str(plan))
 
+    if os.environ.get("TZREC_MEM_DEBUG"):
+        _memdbg_log_planner_estimate(planner, device, int(os.environ.get("RANK", 0)))
+
     model = DistributedModelParallel(
         module=model,
         device=device,
         sharders=sharders,
         plan=plan,
     )
+
+    if os.environ.get("TZREC_MEM_DEBUG") and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+        logger.info(
+            "[MEMDBG] rank=%d after DMP placement: allocated=%.3f GB reserved=%.3f GB"
+            % (
+                int(os.environ.get("RANK", 0)),
+                torch.cuda.memory_allocated(device) / 1e9,
+                torch.cuda.memory_reserved(device) / 1e9,
+            )
+        )
+        torch.cuda.reset_peak_memory_stats(device)
 
     dense_optim_cls, dense_optim_kwargs = optimizer_builder.create_dense_optimizer(
         train_config.dense_optimizer
