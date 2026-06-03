@@ -345,6 +345,47 @@ def _memdbg_log_planner_estimate(planner: object, device: object, rank: int) -> 
     )
 
 
+def _memdbg_dump_resident(model: nn.Module) -> None:
+    """Dump per-FQN-prefix resident GPU bytes after DMP (TZREC_MEM_DEBUG).
+
+    Sharded params are counted by their local shard; data_parallel/replicated
+    params are counted at full size. Reveals per-rank placement imbalance.
+    """
+    from collections import defaultdict
+
+    try:
+        from torchrec.distributed.types import ShardedTensor
+    except Exception:
+        ShardedTensor = ()  # type: ignore
+
+    rank = int(os.environ.get("RANK", 0))
+
+    def _local_bytes(t: object) -> int:
+        if ShardedTensor and isinstance(t, ShardedTensor):
+            tot = 0
+            for s in t.local_shards():
+                tot += s.tensor.numel() * s.tensor.element_size()
+            return tot
+        if torch.is_tensor(t) and t.is_cuda:
+            return t.numel() * t.element_size()
+        return 0
+
+    by_prefix: "defaultdict[str, int]" = defaultdict(int)
+    total = 0
+    for name, t in model.state_dict().items():
+        nbytes = _local_bytes(t)
+        total += nbytes
+        prefix = ".".join(name.split(".")[:6])
+        by_prefix[prefix] += nbytes
+    top = sorted(by_prefix.items(), key=lambda kv: kv[1], reverse=True)[:25]
+    logger.info(
+        "[MEMDBG] rank=%d resident state_dict total=%.3f GB; top FQN prefixes:"
+        % (rank, total / 1e9)
+    )
+    for prefix, nbytes in top:
+        logger.info("[MEMDBG]   rank=%d  %.3f GB  %s" % (rank, nbytes / 1e9, prefix))
+
+
 def _memdbg_step(i_step: int, when: str) -> None:
     """Log peak/current HBM around one training step (TZREC_MEM_DEBUG)."""
     if not torch.cuda.is_available():
@@ -754,6 +795,7 @@ def train_and_evaluate(
                 torch.cuda.memory_reserved(device) / 1e9,
             )
         )
+        _memdbg_dump_resident(model)
         torch.cuda.reset_peak_memory_stats(device)
 
     dense_optim_cls, dense_optim_kwargs = optimizer_builder.create_dense_optimizer(
