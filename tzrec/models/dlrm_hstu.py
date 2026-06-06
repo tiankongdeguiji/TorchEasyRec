@@ -41,6 +41,33 @@ from tzrec.utils.fx_util import fx_int_item, fx_numel
 torch.fx.wrap(fx_int_item)
 torch.fx.wrap(fx_numel)
 
+import os as _os  # noqa: E402
+
+
+def _dbg_sig(tag: str, flat: torch.Tensor, lengths: torch.Tensor) -> None:
+    """Dump a per-request signature of a flat [total, ...] tensor.
+
+    Gated by env TZREC_DBG=1. ``lengths`` is the per-request candidate count
+    (num_targets); we slice ``flat`` by cumulative offsets and emit, per
+    request, a rounded float signature so the per-request ordering can be
+    compared across batch sizes. Output goes to stdout, one line per call.
+    """
+    if _os.environ.get("TZREC_DBG") != "1":
+        return
+    with torch.no_grad():
+        off = (
+            torch.ops.fbgemm.asynchronous_complete_cumsum(lengths.to(torch.int64))
+            .detach()
+            .cpu()
+            .tolist()
+        )
+        f = flat.detach().float().cpu()
+        sigs = []
+        for i in range(len(off) - 1):
+            seg = f[off[i] : off[i + 1]]
+            sigs.append(round(float(seg.sum().item()), 3))
+        print(f"[TZREC_DBG] {tag} B={len(off) - 1} sigs={sigs}", flush=True)
+
 
 @torch.fx.wrap
 def _fx_construct_payload(
@@ -206,17 +233,29 @@ class DlrmHSTU(RankModel):
             # we should reverse all features
             grouped_features = _fx_flip_tensor_dict(grouped_features)
 
+        _dbg_lens = grouped_features["candidate.sequence_length"]
+        if _os.environ.get("TZREC_DBG") == "1":
+            print(
+                f"[TZREC_DBG] NUMTGT B={_dbg_lens.numel()} "
+                f"vals={_dbg_lens.detach().cpu().tolist()[:80]}",
+                flush=True,
+            )
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_embedding_mlp(
                 grouped_features["candidate.sequence"]
             )
+        _dbg_sig("ITEM", candidates_item_embeddings, _dbg_lens)
+        _dbg_sig("CANDIN", grouped_features["candidate.sequence"], _dbg_lens)
 
         with record_function("## user_forward ##"):
             candidates_user_embeddings, _ = self._hstu_transducer(grouped_features)
+        _dbg_sig("USER", candidates_user_embeddings, _dbg_lens)
         with record_function("## multitask_module ##"):
             mt_preds = self._multitask_module(
                 candidates_user_embeddings, candidates_item_embeddings
             )
+        for _tn, _tv in mt_preds.items():
+            _dbg_sig(f"PRED:{_tn}", _tv, _dbg_lens)
 
         if not self._model_config.sequence_timestamp_is_ascending:
             # if timestamp of sequence is descending,

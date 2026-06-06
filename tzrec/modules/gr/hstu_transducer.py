@@ -36,6 +36,35 @@ from tzrec.utils.fx_util import fx_unwrap_optional_tensor
 
 torch.fx.wrap("len")
 
+import os as _os  # noqa: E402
+
+
+def _dbg_cand_seq(
+    tag: str,
+    seq: torch.Tensor,
+    offsets: torch.Tensor,
+    num_targets: torch.Tensor,
+) -> None:
+    """Per-request signature of the candidate (last num_targets) tokens.
+
+    Gated by TZREC_DBG=1. ``seq`` is the [total_seq, D] combined sequence,
+    ``offsets`` the per-request seq offsets, ``num_targets`` the candidate
+    count. We sum the last ``num_targets`` tokens of each request so the
+    per-request ordering can be tracked across batch sizes.
+    """
+    if _os.environ.get("TZREC_DBG") != "1":
+        return
+    with torch.no_grad():
+        offs = offsets.detach().cpu().tolist()
+        nt = num_targets.detach().cpu().tolist()
+        s = seq.detach().float().cpu()
+        sigs = []
+        for i in range(len(offs) - 1):
+            end = offs[i + 1]
+            start = end - nt[i]
+            sigs.append(round(float(s[start:end].sum().item()), 3))
+        print(f"[TZREC_DBG] {tag} B={len(offs) - 1} sigs={sigs}", flush=True)
+
 
 class _HSTUPipelineBase(BaseModule):
     """Shared HSTU encode pipeline.
@@ -266,6 +295,7 @@ class _HSTUPipelineBase(BaseModule):
             seq_embeddings,
             num_targets,
         ) = self._preprocess(grouped_features)
+        _dbg_cand_seq("PRE_CAND", seq_embeddings, seq_offsets, num_targets)
 
         (
             encoded_embeddings,
@@ -280,6 +310,7 @@ class _HSTUPipelineBase(BaseModule):
             seq_embeddings=seq_embeddings,
             num_targets=num_targets,
         )
+        _dbg_cand_seq("STU_CAND", encoded_embeddings, post_stu_seq_offsets, num_targets)
 
         # When STUStack truncated mid-stack, replay the same split on the
         # parallel jagged seq_timestamps so downstream finalization lines up
