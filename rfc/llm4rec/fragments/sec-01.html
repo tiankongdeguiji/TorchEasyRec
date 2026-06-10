@@ -58,7 +58,7 @@
 <li>No general-purpose LLM pretraining from scratch; every recipe starts from an open checkpoint (Qwen3 family).</li>
 <li>No replacement of TorchRec for sparse sharding; no DeepSpeed; no pipeline parallelism in v1 (PP=1).</li>
 <li>Reward <em>models</em> (P-Score multi-tower) are trained with tzrec's existing multi-task stack and consumed by RL as a scoring service; their training is not redesigned here.</li>
-<li>No synchronous LLM reasoning on the request path: CoT models serve via nearline/Think-Ahead caching patterns (<a href="#sec-10">&sect;10.5</a>).</li>
+<li>No synchronous LLM reasoning on the request path: CoT models serve via nearline/Think-Ahead caching patterns (<a href="#sec-10-6">&sect;10.6</a>).</li>
 </ul>
 
 <h3 id="sec-1-5">1.5 Reading guide</h3>

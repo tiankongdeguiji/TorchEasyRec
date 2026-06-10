@@ -48,8 +48,8 @@
 <tr>
 <td>vLLM / SGLang <a class="cite" href="#ref-vllm">[vllm]</a><a class="cite" href="#ref-sglang">[sglang]</a></td>
 <td>vLLM as the pinned RL rollout backend (v1 <code>logits_processors</code> hook, <code>processed_logprobs</code>); optionally vLLM serving for token-only models</td>
-<td>SGLang for SID rollouts; vLLM's emulated beam-search API for constrained decode</td>
-<td>SGLang has no beam search; vLLM's beam API bypasses logits processors — constrained beam runs through the per-step scorer path instead (D11/D12, <a href="#sec-9">&sect;9</a>, <a href="#sec-10">&sect;10</a>).</td>
+<td>SGLang for beam-faithful SID rollouts; vLLM's emulated beam-search API for constrained decode</td>
+<td>SGLang has no beam search (sampling-only GRPO rollouts may still use it, <a href="#sec-10-5">&sect;10.5</a>); vLLM's beam API bypasses logits processors — constrained beam runs through the per-step scorer path instead (D11/D12, <a href="#sec-9">&sect;9</a>, <a href="#sec-10">&sect;10</a>).</td>
 </tr>
 </tbody>
 </table>

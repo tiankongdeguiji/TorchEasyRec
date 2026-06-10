@@ -41,7 +41,7 @@
 <td><span class="risk">R-TRIE</span></td>
 <td>Constrained-decode trie at beam width up to 512</td>
 <td><strong>RESOLVED</strong> &mdash; design adopted from STATIC <a class="cite" href="#ref-static">[static]</a><a class="cite" href="#ref-static-repo">[static-repo]</a></td>
-<td>Flatten the catalog trie to a packed CSR + per-depth dense masks; one batched gather per decode step, O(1) in catalog size; &asymp;1.2&ndash;3.1 GB resident for 3&times;8192 / 250M items depending on layout (<a href="#sec-10">&sect;10</a>). Same artifact serves HF eval, the vLLM logits processor, and the host beam driver (D12).</td>
+<td>Flatten the catalog trie to a packed CSR + per-depth dense masks; one batched gather per decode step, O(1) in catalog size; &asymp;1.2&ndash;3.1 GB resident for 3&times;8192 / 250M items depending on layout (<a href="#sec-10">&sect;10</a>). Same artifact serves HF eval, the vLLM and SGLang processors, the RTP-LLM <code>prefix_dict</code> rendering, and the host beam driver (D12).</td>
 <td>Offline build job + memory-budget check; legality parity vs a reference hash-dict trie with illegal count exactly 0; GPU step-latency benchmark (published numbers are TPU); P2.</td>
 </tr>
 <tr>
@@ -53,9 +53,9 @@
 </tr>
 <tr>
 <td><span class="risk">R-VLLM-PIN</span></td>
-<td>vLLM API drift across 0.8.5&ndash;0.12</td>
+<td>vLLM API drift across 0.8.5&ndash;0.22</td>
 <td><strong>Open, managed</strong></td>
-<td>Pin exact verl+vllm pairs per image; verl's declared upper bound is stale, so the pair is validated by the P3 smoke, not trusted from metadata. Constraint injection rides the two most stable surfaces (engine-level <code>logits_processors</code> registration, <code>SamplingParams.extra_args</code> passthrough); every quoted API carries a version tag (<a href="#sec-9">&sect;9</a>, <a href="#sec-14-3">&sect;14.3</a>).</td>
+<td>Pin exact verl+vllm pairs per image; verl's declared upper bound is stale, so the pair is validated by the P3 smoke, not trusted from metadata. Drift on record: <code>logprobs_mode</code> exists only from v0.10.0; at the HEAD studied (v0.22.1+ dev) Model Runner V2 is default for Qwen3 dense and silently falls back to the V1 runner under custom logits processors or prompt embeds; custom logits processors are rejected when speculative decoding is enabled (structured outputs compose instead). Constraint injection rides the two most stable surfaces (engine-level <code>logits_processors</code> registration, <code>SamplingParams.extra_args</code> passthrough); every quoted API carries a version tag (<a href="#sec-9">&sect;9</a>, <a href="#sec-14-3">&sect;14.3</a>).</td>
 <td>Pinned-pair GRPO smoke (rollout + constrained sampling + reward) green before any pin move; P3.</td>
 </tr>
 <tr>
