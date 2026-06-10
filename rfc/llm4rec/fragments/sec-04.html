@@ -1,0 +1,176 @@
+<section>
+<h2 id="sec-4">4. Target architecture overview</h2>
+
+<p>This section fixes the end-to-end shape of the system: the canonical pipeline from offline SID tokenization through two-world training, RL, and constrained-decode serving; the rationale for keeping sparse parameters in TorchRec while moving the dense LLM to FSDP2/Megatron-core; the package layout and the model-class taxonomy; and the artifact contracts that connect the lifecycle stages. It closes with an explicit accounting of what is retained from the prior internal spec (<code>experiments/llm4rec/00_master_spec.md</code> v1.0) and what this RFC revises. Detailed designs live in the owning sections; everything here is the binding skeleton they hang on.</p>
+
+<h3 id="sec-4-1">4.1 Canonical system diagram</h3>
+
+<p>The architecture mirrors the OpenOneRec blueprint end to end — build SIDs, extend the LLM vocabulary with itemic tokens, co-pretrain/SFT, RL, constrained-decode serving <a class="cite" href="#ref-openonerec">[openonerec]</a> — realized on tzrec's existing orchestration seams (<a href="#sec-3">&sect;3</a>). Relative to the prior spec's master diagram, three boxes changed: the dense world defaults to FSDP2 with Megatron-core as scale-out (D8), the constrained-decoding box is a STATIC-style CSR tensorized trie rather than an open "tensorized trie task" (D12) <a class="cite" href="#ref-static">[static]</a>, and the serving box is an AOTInductor-exported single-step scorer driven by a host-side beam loop, empirically de-risked on this stack (D13).</p>
+
+<pre class="diagram">
+ OFFLINE TOKENIZER (Sec.5)
+   item multimodal/collaborative embeddings  -- upstream artifact, parquet/ODPS
+        |  (item_id, embedding[D])
+        v
+   SidRqkmeans(610) | SidRqvae(611)   -- tzrec models over BaseSidModel, stock train loop  [D1]
+        |  quantizer 3x8192 (default)
+        v
+   CollisionResolver (KNN-sigma | Random | uniqueness digit; ODPS SQL at 100M+)        [D2]
+   quality gates: Gini / codebook utilization / unique-SID ratio / Embedding HitRate   [D3]
+        |
+        v
+   SID ASSET TABLE  item_id &lt;-&gt; [c0,c1,c2]   (many-to-many; SidCatalogIndex)           [D4]
+        |
+        +----------------------+--------------------------+
+        v                      v                          v
+   offline join into      vocab-extension tool        CSR trie bundle
+   training tables        (extended Qwen3 ckpt,       (STATIC-style, Sec.10)
+   (Sec.6)                176,384 rows, Sec.7)
+        |
+        v
+ SHARED DATA / FEATURE LAYER (Sec.6)
+   readers (Odps/Parquet/Csv/Kafka) -&gt; DataParser -&gt; Batch
+   pre-tokenized prompt ids (FG_NONE) | SID history (SequenceSemanticIdFeature)
+   jagged_labels["response_sid_ids"] + jagged_labels["loss_mask"]
+        |
+        v
+ TWO-WORLD TRAINING -- ONE torch.distributed WORLD, one DeviceMesh (Sec.8, Sec.11)
+  +--------------------------------+   +-----------------------------------------+
+  | SPARSE WORLD (TorchRec)        |   | DENSE WORLD (LLM)                       |
+  |  EmbeddingCollection /         |   |  BaseGenerativeModel (600..604)         |
+  |  dynamicemb HKV (250M items,   |   |   backbone: Qwen3 | LazyDecoder |       |
+  |  ROW_WISE), ZCH                |   |     EncoderDecoder | InhouseHSTU   [D5] |
+  |  DistributedModelParallel      |   |   SidPredictionHead + BaseSidDecoder    |
+  |  fused in-backward optimizer   |   |  Fsdp2Parallelizer (DEFAULT)            |
+  |                                |   |  MegatronParallelizer (MoE/EP, ~8B+)    |
+  +--------------------------------+   +-----------------------------------------+
+        |   context embeddings: inputs_embeds (HF) / decoder_input (mcore)  [R-INJECT]
+        +--------------------------------&gt;
+   two optimizer trees, one CombinedOptimizer step [R-GRAD], one DCP checkpoint root
+        |
+        v
+ SFT STAGING (Sec.8):  ITEMIC_TEXT_ALIGN -&gt; CO_PRETRAIN -&gt; MULTI_TASK_SFT -&gt; RSFT  [D6,D7]
+        |
+        v
+ RL (Sec.9): tzrec/rl/ on verl 0.8, ZERO framework patches                         [D9]
+   GRPO | ECPO | GBPO | on-policy distillation; vLLM rollout + CSR-trie
+   logits processor; composable rewards (P-Score RM, duration, legality,
+   format, diversity)                                                          [D10,D14]
+        |
+        v
+ DECODE / SERVE (Sec.10): tzrec/acc/gr/                                       [D12,D13]
+   host-side beam driver over AOTI-exported single-step scorer
+   (explicit KV-cache I/O); SidConstrainedLogitsProcessor over the CSR trie,
+   or unconstrained beam + post-grounding
+   SidCatalogIndex grounding -&gt; item ids -&gt; TARGET_REPEAT_INTERLEAVE_KEY writer
+</pre>
+
+<p>Reading the diagram top to bottom also reads the artifact chain (<a href="#sec-4-5">&sect;4.5</a>): the only contracts between stages are flat tables and checkpoints, never in-process objects. Item embedding generation stays an upstream non-goal — tzrec consumes a parquet/ODPS column, whether it comes from CN-CLIP, Qwen3-Embedding-8B, or a tzrec matching-tower export <a class="cite" href="#ref-forge">[forge]</a><a class="cite" href="#ref-openonerec">[openonerec]</a>.</p>
+
+<h3 id="sec-4-2">4.2 Two-world training: why the split is shaped this way</h3>
+
+<p><strong>Sparse stays TorchRec.</strong> The sparse world's defining workloads have no dense-world equivalent: a 250M-row item table only fits via dynamicemb HKV hash tables with ROW_WISE sharding (<code>dynamicemb_util.py:216</code>), per-token SID and id lookups need <code>EmbeddingCollection</code> semantics with all-to-all exchange, bounded-HBM exact-id mapping needs ZCH, and the fused in-backward optimizer is what makes embedding training throughput-viable. tzrec already owns all of this (<a href="#sec-3">&sect;3</a>) <a class="cite" href="#ref-torchrec">[torchrec]</a>. A strategic simplification keeps the burden tractable: after SID assignment, day-to-day LLM training is dominated by dense compute — the giant item tables are stressed mainly offline during tokenization and in HSTU/encoder-style context paths, while the itemic vocabulary itself is a small 24,576-row block living inside the LLM's embedding matrix.</p>
+
+<p><strong>Dense leaves the DMP/DDP world.</strong> Today DMP wraps the entire <code>TrainWrapper</code> and DDP-replicates every non-sharded parameter (<code>dist_util.py:164-195</code>). For a 1.7B&ndash;8B trunk that means a full parameter copy, full gradients, and full AdamW state per rank — DDP shards nothing. FSDP2's <code>fully_shard</code> shards parameters, gradients, and optimizer state as DTensors over a <code>DeviceMesh</code> derived from the <em>same</em> WORLD process group, composes with TorchRec's DTensor-aware DCP checkpointing, and is exactly how OpenOneRec trains every stage of its 1.7B/8B models <a class="cite" href="#ref-openonerec">[openonerec]</a><a class="cite" href="#ref-pytorch">[pytorch]</a>. Megatron-core 0.18 remains the scale-out backend where FSDP2 runs out of road: expert parallelism for the OneRec MoE arms, tensor-parallel vocab embedding and <code>vocab_parallel_cross_entropy</code> for the 176K-row vocabulary at 8B+, and alignment with verl's megatron engine <a class="cite" href="#ref-megatron">[megatron]</a><a class="cite" href="#ref-verl">[verl]</a>.</p>
+
+<p><strong>Revision pointer (D8).</strong> This inverts the prior spec's decision 3(f) (Megatron-core default, FSDP2 fallback); the canonical rationale lives in the revision callout in <a href="#sec-11-1">&sect;11.1</a>, and <a href="#sec-11">&sect;11</a> owns the full decision.</p>
+
+<p><strong>The bridge and its risks.</strong> The two worlds meet at exactly one activation boundary: TorchRec produces all-to-all'd context embeddings (user towers, HSTU-encoded histories, SID-history embeddings), and the dense backbone consumes them as <code>inputs_embeds</code> (HF path) or <code>decoder_input</code> (mcore path), overwriting designated feature slots without disturbing rope position ids — <span class="risk">R-INJECT</span>. Optimizer trees stay disjoint, partitioned by <code>in_backward_optimizer_filter</code>, but step inside one <code>CombinedOptimizer</code>; the ordering of Megatron's <code>finalize_model_grads</code> versus the fused in-backward sparse step is <span class="risk">R-GRAD</span>. DMP must shard the sparse subtree without DDP-wrapping the FSDP/TP-managed dense parameters — <span class="risk">R-DMP</span> — and the TorchRec planner must be told about dense memory it cannot see — <span class="risk">R-PLANNER</span>. All four are tracked with proof obligations in <a href="#sec-15">&sect;15</a>; the concrete mechanisms live in <a href="#sec-11">&sect;11</a>.</p>
+
+<h3 id="sec-4-3">4.3 Package layout</h3>
+
+<p>The package contract is retained verbatim from the prior spec (&sect;4.1 there), with the SID tokenizer reshaped around the <code>BaseSidModel</code>/<code>ResidualQuantizer</code> base classes that landed on master in PR&nbsp;#538:</p>
+
+<ul>
+<li><code>tzrec/sid/</code> — quantizer backends (k-means and VQ subclasses of <code>ResidualQuantizer</code>), pluggable <code>CollisionResolver</code>s, training-free quality metrics (Gini, utilization, Embedding HitRate), <code>SidCatalogIndex</code> and the trie data structure (<a href="#sec-5">&sect;5</a>).</li>
+<li><code>tzrec/models/generative/</code> — <code>BaseGenerativeModel</code> plus the five model arms (<a href="#sec-7">&sect;7</a>); concrete SID models <code>SidRqkmeans</code>/<code>SidRqvae</code> register alongside. Because <code>auto_import</code> scans <code>tzrec/models/</code> non-recursively (<code>load_class.py:53-99</code>), the subpackage is re-exported through a one-line shim so registry side effects fire.</li>
+<li><code>tzrec/modules/llm/</code> — backbone wrappers (<code>Qwen3GRBackbone</code>, <code>LazyDecoderGRBackbone</code>, <code>EncoderDecoderGRBackbone</code>, <code>InhouseHstuGRBackbone</code>), <code>SidPredictionHead</code>, vocab-extension tool, HF&harr;mcore weight bridge (<a href="#sec-7">&sect;7</a>).</li>
+<li><code>tzrec/rl/</code> — verl-pluggable policy-loss/advantage estimators (ECPO, GBPO, on-policy distillation), composable rewards, the SID-constrained agent loop (<a href="#sec-9">&sect;9</a>).</li>
+<li><code>tzrec/distributed/</code> — <code>DenseParallelizer</code> with <code>Fsdp2Parallelizer</code> (default) and <code>MegatronParallelizer</code> backends, DeviceMesh construction from the existing WORLD (<a href="#sec-11">&sect;11</a>).</li>
+<li><code>tzrec/acc/gr/</code> — <code>SidConstrainedLogitsProcessor</code> (HF and vLLM v1 variants), CSR trie build/load, beam decoders, the host-side decode driver, AOTI export helpers (<a href="#sec-10">&sect;10</a>).</li>
+<li><code>tzrec/datasets/gr/</code> — instruction/prompt builders and the 32K <code>SequencePacker</code> (<a href="#sec-6">&sect;6</a>).</li>
+<li><code>tzrec/features/semantic_id_feature.py</code> — <code>SemanticIdFeature</code>/<code>SequenceSemanticIdFeature</code> owning their <code>_fg_json</code> (<a href="#sec-6">&sect;6</a>).</li>
+<li><code>tzrec/gr/</code> — seven CLI verbs (<code>train_tokenizer | assign_sid | sft | rl | eval | export | serve</code>), thin argparse wrappers (<a href="#sec-12">&sect;12</a>).</li>
+<li><code>tzrec/main_gr.py</code> — orchestration sibling of <code>main.py</code>: same config/feature/dataloader/checkpoint plumbing, plus the dense-parallelizer hook, the GR train pipeline, and the decode driver that <code>main.py</code> has no seam for.</li>
+<li><code>tzrec/protos/</code> — four new proto files; <a href="#sec-12">&sect;12</a> is the source of truth.</li>
+</ul>
+
+<h3 id="sec-4-4">4.4 Model classes and how the literature maps onto them</h3>
+
+<p>Five generative model classes and two SID tokenizer-training classes enter the <code>oneof model</code> registry; the proto message name equals the Python class name, so registration needs no <code>main.py</code> edits (<a href="#sec-3">&sect;3</a>). MiniOneRec is deliberately <em>not</em> a class: it is a config preset over <code>LCRec</code> plus GRPO <a class="cite" href="#ref-minionerec">[minionerec]</a>.</p>
+
+<figure class="table-wrap">
+<table class="data">
+<thead>
+<tr><th>Class (tag)</th><th>Source</th><th>Backbone (D5)</th><th>Tokenizer pairing</th><th>Training</th><th>RL</th><th>Decode</th></tr>
+</thead>
+<tbody>
+<tr><td><code>OpenOneRec</code> (600)</td><td><a class="cite" href="#ref-openonerec">[openonerec]</a></td><td><code>Qwen3GRBackbone</code> (HF weights; FSDP2 or mcore)</td><td>RQ-KMeans 3&times;8192</td><td>full 4-stage curriculum (&sect;8)</td><td>GRPO + on-policy distillation on verl</td><td>two-stage CoT + SID beam; CSR trie</td></tr>
+<tr><td><code>OneRecV1</code> (601)</td><td><a class="cite" href="#ref-onerec-v1">[onerec-v1]</a></td><td><code>EncoderDecoderGRBackbone</code> (MoE option)</td><td>RQ-KMeans 3&times;8192</td><td>session NTP + RSFT</td><td>ECPO + P-Score/format/diversity rewards, beam rollout</td><td>constrained beam (tzrec-native rollout, D11)</td></tr>
+<tr><td><code>OneRecV2</code> (602)</td><td><a class="cite" href="#ref-onerec-v2">[onerec-v2]</a></td><td><code>LazyDecoderGRBackbone</code> (MoE option)</td><td>RQ-KMeans 3&times;8192</td><td>NTP on new impressions</td><td>GBPO on logged real feedback — no rollout engine</td><td>constrained beam</td></tr>
+<tr><td><code>ALGR</code> (603)</td><td><a class="cite" href="#ref-forge">[forge]</a></td><td><code>Qwen3GRBackbone</code> (small dense) or <code>EncoderDecoderGRBackbone</code></td><td>RQ-VAE + Random-5 collision</td><td>next-SID NTP</td><td>none (retrieval-only)</td><td>dynamic-width beam; unconstrained + post-grounding supported</td></tr>
+<tr><td><code>LCRec</code> (604)</td><td><a class="cite" href="#ref-lcrec">[lcrec]</a></td><td><code>Qwen3GRBackbone</code></td><td>RQ-VAE 4&times;256, Sinkhorn last level</td><td>multi-task instruction SFT</td><td>optional; MiniOneRec preset = LCRec + GRPO <a class="cite" href="#ref-minionerec">[minionerec]</a></td><td>constrained beam</td></tr>
+<tr><td><code>SidRqkmeans</code> (610)</td><td><a class="cite" href="#ref-openonerec">[openonerec]</a><a class="cite" href="#ref-onerec-v1">[onerec-v1]</a></td><td>— (<code>BaseSidModel</code>)</td><td><em>is</em> the tokenizer: faiss residual k-means</td><td>stock tzrec loop</td><td>—</td><td>—</td></tr>
+<tr><td><code>SidRqvae</code> (611)</td><td><a class="cite" href="#ref-forge">[forge]</a><a class="cite" href="#ref-lcrec">[lcrec]</a></td><td>— (<code>BaseSidModel</code>)</td><td><em>is</em> the tokenizer: gradient RQ-VAE</td><td>stock tzrec loop</td><td>—</td><td>—</td></tr>
+</tbody>
+</table>
+<figcaption>Table 4.1 — Model-class taxonomy. Proto message name == Python class name; tags 600&ndash;604 and 610&ndash;611 in the free 600 block of <code>ModelConfig.model</code>.</figcaption>
+</figure>
+
+<p>The newly surveyed literature maps onto this taxonomy without new classes. TIGER and GRID configure the encoder-decoder shape at small scale <a class="cite" href="#ref-tiger">[tiger]</a><a class="cite" href="#ref-grid">[grid]</a>; PLUM's lessons (co-pretraining dominates base-model choice, reward-weighted SFT sampling) land as stage and sampling knobs in D6/D14 <a class="cite" href="#ref-plum">[plum]</a>; OneRec-Think and OneReason contribute RL recipes (two-stage rollouts, RFT, MOPD, stage-wise clipping) and the Think-Ahead serving pattern to D10/D13 <a class="cite" href="#ref-onerec-think">[onerec-think]</a><a class="cite" href="#ref-onereason">[onereason]</a>; Latte's latent tokens and PIT's tokenizer&ndash;recommender co-evolution are scoped extensions under D16 <a class="cite" href="#ref-latte">[latte]</a><a class="cite" href="#ref-pit">[pit]</a>; RPG-style parallel decode and LLaDA-Rec diffusion are future work that D5's level-agnostic interfaces must not preclude (D15) <a class="cite" href="#ref-rpg">[rpg]</a><a class="cite" href="#ref-llada-rec">[llada-rec]</a>.</p>
+
+<h3 id="sec-4-5">4.5 Pipeline lifecycle and artifact hand-offs</h3>
+
+<p>Every stage is a separate launch with a file-level artifact contract; no stage holds another's in-process state. Checkpoints chain through the existing <code>--fine_tune_checkpoint</code> mechanism, and decode-time assets (catalog, trie, extended tokenizer) ship through <code>--additional_export_config</code> into <code>model_acc.json</code> alongside the exported model, following the TDM precedent of separately serialized artifacts (<a href="#sec-3">&sect;3</a>).</p>
+
+<figure class="table-wrap">
+<table class="data">
+<thead>
+<tr><th>#</th><th>Stage</th><th>Entry</th><th>Consumes</th><th>Produces</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>Item embedding generation</td><td>upstream (non-goal)</td><td>item corpus</td><td><strong>item embedding parquet/ODPS</strong> <code>(item_id, embedding[D])</code></td></tr>
+<tr><td>1</td><td>Tokenizer training</td><td><code>tzrec.gr.train_tokenizer</code></td><td>embedding table</td><td>tokenizer checkpoint (codebook buffers)</td></tr>
+<tr><td>2</td><td>SID assignment + collision resolution</td><td><code>tzrec.gr.assign_sid</code></td><td>tokenizer ckpt + embedding table</td><td><strong>SID asset table</strong> <code>item_id &lt;-&gt; [c0,c1,c2]</code> + quality-gate report (D3)</td></tr>
+<tr><td>3</td><td>Vocab extension</td><td>tool (<a href="#sec-7">&sect;7</a>)</td><td>base HF Qwen3 + level/codebook config</td><td><strong>extended-vocab checkpoint</strong> (176,384 rows; stale rows re-initialized, <span class="risk">R-VOCAB-INIT</span>) + extended tokenizer</td></tr>
+<tr><td>4</td><td>Align &rarr; co-pretrain &rarr; SFT &rarr; RSFT</td><td><code>tzrec.gr.sft</code> (stage flag)</td><td>extended ckpt + joined training tables (<a href="#sec-6">&sect;6</a>)</td><td><strong>stage checkpoints</strong>, chained via <code>--fine_tune_checkpoint</code></td></tr>
+<tr><td>5</td><td>RL</td><td><code>tzrec.gr.rl</code> (ray/verl)</td><td>SFT ckpt + RL samples + trie bundle</td><td>RL checkpoint</td></tr>
+<tr><td>6</td><td>Evaluation</td><td><code>tzrec.gr.eval</code></td><td>any ckpt + SID asset table</td><td>HR@K / legality / retention report (<a href="#sec-13">&sect;13</a>)</td></tr>
+<tr><td>7</td><td>Export</td><td><code>tzrec.gr.export</code></td><td>final ckpt + catalog</td><td><strong>exported single-step scorer (AOTI) + CSR trie bundle</strong> + tokenizer/catalog assets</td></tr>
+<tr><td>8</td><td>Serving</td><td><code>tzrec.gr.serve</code> / PAI-EAS / RTP-LLM</td><td>export bundle</td><td>online generative-retrieval service (<a href="#sec-10">&sect;10</a>)</td></tr>
+</tbody>
+</table>
+<figcaption>Table 4.2 — Lifecycle stages and the artifact chain: embedding parquet &rarr; SID asset table &rarr; extended-vocab checkpoint &rarr; stage checkpoints &rarr; exported scorer + trie bundle.</figcaption>
+</figure>
+
+<p>Two properties of this chain are deliberate. First, the SID asset table is the <em>single</em> integration seam between the tokenizer subsystem and everything downstream — training joins, vocabulary id arithmetic, trie construction, and HR@K expansion all read the same table, so a re-tokenization (cadence risk <span class="risk">R-RETOK</span>) is a table swap plus dependent-artifact rebuild, not a code change. Second, every numbered stage is restartable from its inputs: the pipeline has no hidden coupling that would force a full rerun when, say, only the RL stage changes.</p>
+
+<h3 id="sec-4-6">4.6 Relationship to the prior spec</h3>
+
+<p>This RFC supersedes <code>00_master_spec.md</code> v1.0 (2026-05-29). The architecture, canonical package/class names, proto tag allocations, and label contracts are retained; revisions are driven by evidence gathered since (OpenOneRec source study, FORGE/STATIC/PLUM publications, and local export experiments) and are individually marked in their owning sections. Table 4.3 is the complete delta accounting.</p>
+
+<figure class="table-wrap">
+<table class="data">
+<thead>
+<tr><th>Area</th><th>Prior spec v1.0</th><th>This RFC</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Two-world architecture</td><td>One WORLD PG; TorchRec sparse + dense LLM; bridge via <code>inputs_embeds</code>/<code>decoder_input</code>; two optimizer trees; unified checkpoint</td><td>identical</td><td>Retained</td></tr>
+<tr><td>Packages, class names, CLI verbs, label keys</td><td>&sect;4.1/&sect;4.3/&sect;4.4; <code>response_sid_ids</code> + separate <code>loss_mask</code></td><td>identical; SID tokenizers reshaped as models over the PR&nbsp;#538 <code>BaseSidModel</code> (tags 610/611 added)</td><td>Retained, extended</td></tr>
+<tr><td>Proto 600 block, name==class rule</td><td>600&ndash;604; MiniOneRec is a preset</td><td>identical</td><td>Retained</td></tr>
+<tr><td>Dense parallelism default</td><td>Megatron TP/PP/EP default, FSDP2 fallback (decision 3(f))</td><td><strong>FSDP2 default</strong> (OpenOneRec-proven, in-tree, DTensor/DCP-composable); Megatron = scale-out for MoE/EP and ~8B+ (D8)</td><td><strong>Revised</strong></td></tr>
+<tr><td>Vocab sizing (&sect;4.7.4)</td><td><code>sid_vocab_size</code> = itemic block padded to 24,832; total = begin + block (internally inconsistent: 176,501 vs "&asymp;176,246")</td><td>pad the <strong>total</strong>: tokenizer length 176,247 &rarr; align(&middot;,256) = <strong>176,384</strong>; <code>itemic_id_range = [151669, 176245)</code>; <code>sid_vocab_size</code> field removed (<a href="#sec-7">&sect;7</a>, <a href="#sec-12">&sect;12</a>)</td><td><strong>Revised</strong></td></tr>
+<tr><td>Constrained-decoding trie (<span class="risk">R-TRIE</span>)</td><td>per-prefix <code>SidTrie</code> required; tensorized trie an open tracked task</td><td><strong>resolved</strong>: STATIC-style packed CSR trie, one batched gather per step, ~1.2&ndash;3.1&nbsp;GB at 3&times;8192 / 250M items (D12) <a class="cite" href="#ref-static">[static]</a></td><td><strong>Resolved</strong></td></tr>
+<tr><td>Single-step scorer export (<span class="risk">R-EXPORT</span>)</td><td>unproven design task (TP-sharded logits, DTensor rejection)</td><td><strong>de-risked empirically</strong>: Qwen3 decode step with static KV cache exports on torch&nbsp;2.11 — bit-exact under <code>torch.export</code> incl. beam reorder; AOTI fp32-exact, bf16 within fusion noise; two gotchas documented (D13, <a href="#sec-10">&sect;10</a>)</td><td><strong>De-risked</strong></td></tr>
+<tr><td>Stage-1 itemic freezing</td><td>restore-frozen-slice after <code>optimizer.step()</code>, all backends</td><td><strong>backend-specific</strong> (D7): restore/grad-mask on FSDP2; on Megatron the restore trick is <em>broken</em> under DistributedOptimizer fp32 masters &rarr; zero <code>main_grad</code> rows after <code>finalize_model_grads</code> + <code>wd_mult=0.0</code> (<a href="#sec-8">&sect;8</a>)</td><td><strong>Revised</strong></td></tr>
+<tr><td>Item&harr;SID mapping</td><td>collision buckets with bounded fan-out (&sigma;)</td><td><strong>many-to-many from day one</strong> (D4): multi-path scoring + dedup in <code>SidCatalogIndex</code>; HR@K expands SID&rarr;items in beam order (FORGE buckets, PIT top-B, Latte latent trees)</td><td><strong>Revised</strong></td></tr>
+<tr><td>verl integration</td><td>two vendored forks (0.5.0 RL + 0.7.0.dev distill), target 0.8.0.dev</td><td>single <strong>verl 0.8 line, zero framework patches</strong>: agent-loop YAML, engine-level logits processors, custom reward/dataset hooks (D9); vLLM pinned as rollout backend (D11)</td><td><strong>Revised</strong></td></tr>
+<tr><td>Collision resolvers</td><td>KNN / Random / FSQ + uniqueness digit</td><td>KNN-&sigma; / Random / uniqueness digit; FSQ dropped from v1 (no production evidence; D2)</td><td>Revised (narrowed)</td></tr>
+<tr><td>Algorithm scope</td><td>OneRec V1/V2, OpenOneRec, ALGR, LC-Rec, MiniOneRec</td><td>adds OneRec-Think/OneReason (RFT, MOPD, Think-Ahead), PLUM, GRID, PIT, Latte, RPG, AtSpeed, LLaDA-Rec — folded into D10/D13/D15/D16, no new classes</td><td>New scope</td></tr>
+<tr><td>MTP / parallel decode</td><td>not covered</td><td>DeepSeek-style MTP aux loss = optional v1.5 training-only flag; RPG/speculative/diffusion future-proofed via D5 interfaces (D15) <a class="cite" href="#ref-dsv3">[dsv3]</a></td><td>New scope</td></tr>
+</tbody>
+</table>
+<figcaption>Table 4.3 — Retained decisions vs. revisions relative to <code>00_master_spec.md</code> v1.0. Every "Revised" row is elaborated as a <em>Revision</em> callout in its owning section.</figcaption>
+</figure>
+
+</section>

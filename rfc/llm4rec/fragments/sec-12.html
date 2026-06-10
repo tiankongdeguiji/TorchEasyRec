@@ -1,0 +1,432 @@
+<section>
+<h2 id="sec-12">12. Configuration and API design</h2>
+
+<p>This section is the source of truth for the new protobuf surface and CLI. Four proto files are added — <code>tzrec/protos/models/generative_model.proto</code>, <code>tzrec/protos/models/semantic_id.proto</code>, <code>tzrec/protos/sft.proto</code>, <code>tzrec/protos/rl.proto</code> — plus seven new <code>oneof model</code> arms in <code>model.proto</code>. The design follows tzrec's established minimal-proto idiom: no wrapper messages, no enums for single-mode operations, and name-based routing wherever a choice among alternatives exists. Two complete text-proto examples close the section.</p>
+
+<h3 id="sec-12-1">12.1 Design rules and registry coupling</h3>
+
+<p>Three mechanical couplings constrain every message below. First, <strong>proto message name == Python class name</strong>: <code>config_util.which_msg(model_config, "model")</code> returns the message class name of the set oneof arm and <code>BaseModel.create_class(name)</code> resolves it against the registry metaclass (<code>config_util.py:73-75</code>, <code>main.py:127-159</code>) — adding a model is one message, one tag, one identically named class, and zero orchestration edits. One registration caveat: <code>auto_import</code> scans <code>tzrec/models/*.py</code> non-recursively (<code>load_class.py:53-99</code>), so the classes under <code>tzrec/models/generative/</code> register through a one-line re-export shim placed directly under <code>tzrec/models/</code> — <code>auto_import</code> itself is not modified (<a href="#sec-4">&sect;4</a>, <a href="#sec-7">&sect;7</a>). Second, <strong>proto field names == module keyword names</strong>: <code>config_to_kwargs</code> is <code>MessageToDict(..., including_default_value_fields=True, preserving_proto_field_name=True)</code> (<code>config_util.py:66-70</code>), so field naming is API design, not cosmetics. <code>including_default_value_fields</code> is the protobuf-4.x spelling, which is why the codegen toolchain stays pinned at <code>grpcio-tools&lt;1.63.0</code>; after any <code>.proto</code> edit, regenerate with <code>bash scripts/gen_proto.sh</code> (the script globs new files automatically). Third, the SID tokenizer messages must carry exactly the field names the <strong>already-merged</strong> <code>BaseSidModel</code> reads off its model config — <code>embedding_feature_name</code>, <code>input_dim</code>, <code>normalize_residuals</code>, <code>codebook</code> (<code>tzrec/models/sid_model.py:54-74</code>).</p>
+
+<p>The minimal-proto rules applied throughout: alternatives are a named <code>oneof</code> (the arm name routes behavior); booleans and scalars are flat fields on the owning message rather than nested option messages; knobs that tzrec does not itself interpret are not modeled — for RL they pass through a <code>verl_overrides</code> string map of dotted Hydra paths, and for anything else they do not exist until a consumer does (fail loud beats silent defaults).</p>
+
+<h3 id="sec-12-2">12.2 model.proto: the 600 block</h3>
+
+<pre><code>// tzrec/protos/model.proto — additions inside `oneof model`
+// 100s ranking, 200s multitask, 300s match, 400 tdm, 500 rocket_launching are taken.
+OpenOneRec open_one_rec = 600;
+OneRecV1   one_rec_v1   = 601;
+OneRecV2   one_rec_v2   = 602;
+ALGR       algr         = 603;
+LCRec      lc_rec       = 604;
+
+SidRqkmeans sid_rqkmeans = 610;
+SidRqvae    sid_rqvae    = 611;
+</code></pre>
+
+<p>MiniOneRec is intentionally absent: it is an <code>lc_rec</code> arm with an <code>rl</code> block (<a href="#sec-4">&sect;4.4</a>) <a class="cite" href="#ref-minionerec">[minionerec]</a>.</p>
+
+<h3 id="sec-12-3">12.3 generative_model.proto</h3>
+
+<pre><code>// tzrec/protos/models/generative_model.proto
+enum DenseBackend {
+    FSDP2 = 0;      // default (D8)
+    MEGATRON = 1;   // MoE/EP, ~8B+
+}
+
+message Qwen3Backbone {
+    // architecture is read from hf_model_path's config.json; fields here are overrides
+    optional string attn_implementation = 1 [default = "flash_attention_2"];
+    optional bool tie_word_embeddings = 2;   // override HF config only when set
+}
+message LazyDecoderBackbone {                 // OneRecV2
+    required uint32 num_layers = 1;
+    required uint32 hidden_size = 2;
+    required uint32 num_attention_heads = 3;
+    optional uint32 num_query_groups = 4 [default = 1];
+    optional uint32 kv_layer_sharing = 5 [default = 1];
+    optional uint32 num_moe_experts = 6 [default = 0];
+}
+message EncoderDecoderBackbone {              // OneRecV1 / TIGER-style
+    required uint32 encoder_num_layers = 1;
+    required uint32 decoder_num_layers = 2;
+    required uint32 hidden_size = 3;
+    required uint32 num_attention_heads = 4;
+    optional uint32 num_moe_experts = 5 [default = 0];
+    repeated string encoder_feature_groups = 6;
+}
+message InhouseHstuBackbone {                 // reuses module.proto STU
+    required STU stu = 1;
+    required uint32 num_layers = 2;
+}
+
+message GenerativeBackboneConfig {
+    oneof backbone {
+        Qwen3Backbone qwen3 = 1;
+        LazyDecoderBackbone lazy_decoder = 2;
+        EncoderDecoderBackbone encoder_decoder = 3;
+        InhouseHstuBackbone inhouse_hstu = 4;
+    }
+    optional string hf_model_path = 10;       // extended-vocab checkpoint (Sec.7)
+    optional DenseBackend dense_backend = 11 [default = FSDP2];
+    optional uint32 tensor_model_parallel_size = 12 [default = 1];
+    optional uint32 pipeline_model_parallel_size = 13 [default = 1];  // PP=1 in v1
+    optional uint32 expert_model_parallel_size = 14 [default = 1];
+
+    required uint32 num_sid_levels = 20;      // never hard-coded to 3 (D5)
+    required uint32 codebook_size = 21;
+    optional uint32 itemic_id_range_begin = 22 [default = 151669];
+    optional uint32 max_sequence_length = 23 [default = 32768];
+    optional uint32 vocab_align_to = 24 [default = 256];
+}
+</code></pre>
+
+<div class="callout revision">
+<p class="callout-title">Revision — <code>sid_vocab_size</code> is removed; vocab quantities are derived</p>
+<p>The prior spec carried a <code>sid_vocab_size</code> field defined as the padded itemic block length (24,832), with total vocab = <code>itemic_id_range_begin</code> + block — arithmetic that was internally inconsistent (<a href="#sec-4">&sect;4.6</a>). Under the corrected math everything derives from three fields: <code>K = num_sid_levels &times; codebook_size</code> itemic tokens occupy <code>[itemic_id_range_begin, begin+K)</code> = <code>[151669, 176245)</code>; the two specials <code>&lt;|sid_begin|&gt;</code>/<code>&lt;|sid_end|&gt;</code> follow at 176245/176246; and the model vocab pads the <em>total</em>: <code>align(176247, 256) = 176384</code>, which divides evenly for TP &isin; {1,2,4,8,&hellip;}. A redundant stored size would only invite drift; instead <code>main_gr</code> recomputes the quantities and fails loud if they disagree with the checkpoint's embedding-row count and tokenizer length. The stale-row initialization gotcha for rows <code>[151669, 151936)</code> is owned by <a href="#sec-7">&sect;7</a> (<span class="risk">R-VOCAB-INIT</span>).</p>
+</div>
+
+<p>The five model messages are thin: a backbone plus optional stage configs, and model-specific knobs only where a paper defines one.</p>
+
+<pre><code>message OpenOneRec {
+    required GenerativeBackboneConfig backbone = 1;
+    optional SftConfig sft = 2;
+    optional RlConfig rl = 3;
+    optional bool cot_then_sid = 4 [default = true];   // two-stage decode (Sec.10)
+}
+message OneRecV1 {
+    required GenerativeBackboneConfig backbone = 1;
+    optional SftConfig sft = 2;
+    optional RlConfig rl = 3;
+}
+message OneRecV2 {
+    required GenerativeBackboneConfig backbone = 1;
+    optional SftConfig sft = 2;
+    optional RlConfig rl = 3;
+}
+message ALGR {
+    required GenerativeBackboneConfig backbone = 1;
+    optional SftConfig sft = 2;
+    repeated uint32 dynamic_beam_widths = 4;           // e.g. 100, 200, 400 [forge]
+}
+message LCRec {
+    required GenerativeBackboneConfig backbone = 1;
+    optional SftConfig sft = 2;
+    optional RlConfig rl = 3;                          // MiniOneRec preset sets GRPO here
+}
+</code></pre>
+
+<p>One structural change from the prior spec: the model messages no longer embed a <code>required SemanticIdConfig</code>. Tokenizer training is its own model run (610/611), and the generative model consumes its outputs through data columns (<a href="#sec-6">&sect;6</a>) and decode-time assets (<a href="#sec-10">&sect;10</a>); the only SID facts the backbone needs — levels, codebook size, range begin — live on <code>GenerativeBackboneConfig</code>.</p>
+
+<h3 id="sec-12-4">12.4 semantic_id.proto</h3>
+
+<p>The two tokenizer models share the <code>BaseSidModel</code> field quartet verbatim and inline their quantizer-specific knobs (a dedicated message per model already exists; wrapping its own options again would be a wrapper for its own sake). Collision resolution is a <code>oneof</code> because it is post-processing decoupled from the quantizer (D2) — the <code>assign_sid</code> stage reads it, the training stage ignores it.</p>
+
+<pre><code>// tzrec/protos/models/semantic_id.proto
+message KnnCollision {                   // FORGE Alg.1: capacity-bounded greedy [forge]
+    optional uint32 bucket_capacity = 1 [default = 5];
+    optional uint32 knn_candidates = 2 [default = 200];
+}
+message RandomCollision {                // FORGE Alg.2 "Random-5": round-robin last level (D2 default)
+    optional uint32 bucket_capacity = 1 [default = 5];
+}
+message SinkhornCollision {              // LC-Rec: re-encode colliding groups, last-level Sinkhorn
+    optional uint32 max_rounds = 1 [default = 20];
+}
+
+message SidRqkmeans {
+    // shared BaseSidModel fields (names fixed by tzrec/models/sid_model.py:54-74)
+    required string embedding_feature_name = 1;
+    required uint32 input_dim = 2;
+    optional bool normalize_residuals = 3 [default = false];
+    repeated uint32 codebook = 4;        // per-level sizes, e.g. [8192, 8192, 8192]
+    // quantizer knobs (faiss residual k-means; names per Table 5.2)
+    optional uint32 kmeans_niter = 10 [default = 20];
+    optional bool spherical = 11 [default = false];
+    optional bool balanced = 12 [default = false];   // OneRec-V1 equal-capacity variant
+    optional uint64 train_sample_budget = 13;        // per-rank reservoir cap; unset = all rows
+    // collision post-processing, consumed by assign_sid (D2)
+    oneof collision {
+        KnnCollision knn = 20;
+        RandomCollision random = 21;
+    }
+    optional bool uniqueness_digit = 22 [default = false];  // append level L+1 tiebreak
+}
+
+message SidRqvae {
+    required string embedding_feature_name = 1;
+    required uint32 input_dim = 2;
+    optional bool normalize_residuals = 3 [default = false];
+    repeated uint32 codebook = 4;
+    // quantizer knobs (gradient RQ-VAE; D1)
+    repeated uint32 encoder_hidden_dims = 10;    // MLP encoder; decoder mirrored
+    optional uint32 codebook_dim = 11 [default = 64];
+    optional float commitment_weight = 12 [default = 0.25];
+    optional bool kmeans_init = 13 [default = true];
+    optional bool dead_code_reset = 14 [default = true];
+    optional bool use_rotation_trick = 15 [default = false];
+    repeated float sinkhorn_epsilons = 16;       // per level; empty = off; LC-Rec: last only
+    optional float cooccurrence_infonce_weight = 17 [default = 0.0];  // i2i aux loss [forge]
+    optional bool use_ema = 18 [default = false];               // EMA codebook updates; off per al_sid
+    optional float progressive_mask_prob = 19 [default = 0.0];  // PLUM progressive prefix masking
+    oneof collision {
+        KnnCollision knn = 20;
+        RandomCollision random = 21;
+        SinkhornCollision sinkhorn = 23;  // SidRqvae only: needs trained codebook distances
+    }
+    optional bool uniqueness_digit = 22 [default = false];
+}
+</code></pre>
+
+<p>Metrics need no new fields: <code>BaseSidModel.init_metric</code> already registers <code>mse</code> and <code>unique_sid_ratio</code> unconditionally, and the training-free quality gates (Gini, per-level utilization, Embedding HitRate) are computed by <code>assign_sid</code> tooling over the finished asset table (D3, <a href="#sec-5">&sect;5</a>, <a href="#sec-13">&sect;13</a>) — they are properties of an artifact, not of a training step, so they live behind CLI flags (<code>--output_table_path</code>, <code>--quality_report_path</code>) rather than the model proto.</p>
+
+<h3 id="sec-12-5">12.5 sft.proto</h3>
+
+<pre><code>// tzrec/protos/sft.proto
+enum SftStage {
+    ITEMIC_TEXT_ALIGN = 0;   // stage 1: train itemic rows only (D7)
+    CO_PRETRAIN = 1;         // stage 2: full-param, rec + general-text mix (D6)
+    MULTI_TASK_SFT = 2;      // stage 3: instruction tuning, response-masked CE
+    RSFT = 3;                // optional: top-fraction sessions, annealed LR
+}
+
+message MixtureSource {      // one weighted MixtureReader source (Sec.6.4)
+    required string input_path = 1;
+    optional float weight = 2 [default = 1.0];
+}
+
+message SftConfig {
+    optional SftStage stage = 1 [default = MULTI_TASK_SFT];
+    // freezing: first trainable embedding row; rows below stay frozen in stage 1
+    optional uint32 start_optimize_embedding_index = 2;
+    // CO_PRETRAIN mix: per-source interleave weights for the MixtureReader (Sec.6.4)
+    repeated MixtureSource mixture_sources = 3;
+    // packing (D6): requires a varlen flash-attention backend (validated, see below)
+    optional uint32 pack_max_length = 4 [default = 32768];
+    // loss; no masking knob here: jagged_labels["loss_mask"] is fixed at build time (Sec.6/8)
+    optional bool use_chunked_loss = 5 [default = true];   // 176K-vocab lm_head CE
+    optional uint32 loss_chunk_size = 6 [default = 16384];
+    // RSFT session filter: keep top fraction by the named reward column
+    optional float rsft_keep_fraction = 7 [default = 0.5];
+    optional string rsft_score_column = 8;
+    // PLUM-style reward-weighted sample selection (D14); 0 = uniform
+    optional float reward_weighted_sampling_alpha = 9 [default = 0.0];
+}
+</code></pre>
+
+<p><strong>Validation (D6, fail loud).</strong> When packing is enabled (<code>pack_max_length &gt; 0</code>, the default), <code>main_gr.sft</code> requires the backbone's resolved attention implementation to be a varlen flash-attention backend — <code>flash_attention_2</code>/<code>3</code> on the HF route, the TransformerEngine layer spec on the Megatron route — and aborts at startup otherwise: SDPA and eager attention ignore <code>cu_seqlens</code> and silently cross-attend across packed documents (<a href="#sec-6">&sect;6.5</a>, <a href="#sec-8">&sect;8</a>). The packing&times;backend pair is checked in config validation, never discovered mid-train.</p>
+
+<p>Deliberate omissions: optimizer, LR schedule, and mixed-precision settings are <em>not</em> duplicated here — they remain in <code>TrainConfig</code>, with the LLM's AdamW expressed through the existing <code>adamw_optimizer</code>/<code>cosine_annealing_learning_rate</code> arms; instruction-task suite construction and chat templating are data-build-time concerns owned by <a href="#sec-6">&sect;6</a>'s builders, not training-time proto (only the corpus-interleave weights above are train-time, because the <code>MixtureReader</code> enforces them at the sampler). A stage flip between runs is a one-field <code>--edit_config_json</code> override, and stage checkpoints chain via <code>--fine_tune_checkpoint</code> (<a href="#sec-8">&sect;8</a>).</p>
+
+<h3 id="sec-12-6">12.6 rl.proto</h3>
+
+<pre><code>// tzrec/protos/rl.proto
+enum RlAlgorithm {
+    GRPO = 0;   // default; stock verl estimator (D10)
+    ECPO = 1;   // OneRecV1 early-clip; registered policy-loss plugin
+    GBPO = 2;   // OneRecV2 gradient-bounded; no rollouts, logged feedback
+    PPO = 3;    // stock verl, critic enabled
+}
+
+message RewardModelReward {     // external P-Score multi-tower RM service (D14)
+    required string score_service = 1;
+}
+message DurationAwareReward {
+    optional float log_bucket_base = 1 [default = 2.0];
+    optional float percentile_threshold = 2 [default = 0.25];
+}
+message SidLegalityReward {}    // OneRecV1 random-K legality credit; diagnostic under
+                                // constrained decode (never penalize-and-train: discard)
+message FormatReward {}
+message DiversityReward {}      // group-level first-digit diversity factor
+
+message RewardConfig {
+    oneof reward {
+        RewardModelReward reward_model = 1;
+        DurationAwareReward duration_aware = 2;
+        SidLegalityReward sid_legality = 3;
+        FormatReward format = 4;
+        DiversityReward diversity = 5;
+    }
+    optional float weight = 10 [default = 1.0];
+}
+
+message RlConfig {
+    optional RlAlgorithm algorithm = 1 [default = GRPO];
+    // rollout (vLLM is the pinned engine, D9/D11 — no engine enum)
+    optional uint32 group_size = 2 [default = 8];
+    optional uint32 beam_width = 3 [default = 32];     // SID-stage beam (two-stage rollout)
+    optional bool constrained_decoding = 4 [default = true];
+    // objective
+    optional float kl_loss_coef = 5 [default = 0.001];
+    optional float clip_ratio_low = 6 [default = 0.2];
+    optional float clip_ratio_high = 7 [default = 0.28];
+    // on-policy distillation (selected via verl_overrides adv estimator; D10)
+    optional string distill_teacher_path = 8;
+    optional float distill_adv_min = 9 [default = -30.0];
+    optional float distill_adv_max = 10 [default = 5.0];
+    repeated RewardConfig rewards = 11;
+    // pass-through dotted Hydra overrides; tzrec does not interpret these
+    map&lt;string, string&gt; verl_overrides = 20;
+}
+</code></pre>
+
+<p><code>main_gr.rl</code> renders this message into a verl Hydra config: <code>algorithm</code> selects the registered estimator, <code>constrained_decoding: true</code> injects the CSR-trie logits processor through <code>engine_kwargs.vllm.logits_processors</code> and registers the SID agent loop via <code>rollout.agent.agent_loop_config_path</code>, rewards become a <code>custom_reward_function</code>, and <code>verl_overrides</code> wins last-write for anything else (e.g. <code>actor_rollout_ref.rollout.gpu_memory_utilization</code>) <a class="cite" href="#ref-verl">[verl]</a>. Two prior-spec arms are dropped: the rollout-engine enum (vLLM is pinned — SGLang has no beam search, D11 <a class="cite" href="#ref-sglang">[sglang]</a>) and the DPO arm (no v1 implementation; an enum value without a consumer violates fail-loud). Rendering is preceded by validation: <code>RlConfig</code> is cross-checked against the D11 backbone&times;rollout matrix (<a href="#sec-9-4">&sect;9.4</a>) — <code>GBPO</code> is the only legal algorithm for the <code>lazy_decoder</code> backbone (no rollout engine), rollout-based algorithms require a token-LLM backbone, and <code>encoder_decoder</code>/<code>inhouse_hstu</code> take the tzrec-native in-process loop — so an unsupported (backbone, algorithm) pair is a startup config error, never a silent degradation.</p>
+
+<h3 id="sec-12-7">12.7 CLI entry points</h3>
+
+<p>All verbs are thin argparse wrappers over <code>tzrec/main_gr.py</code> and reuse the standard flags <code>--pipeline_config_path</code>, <code>--model_dir</code>, <code>--edit_config_json</code>, <code>--fine_tune_checkpoint</code>.</p>
+
+<figure class="table-wrap">
+<table class="data">
+<thead>
+<tr><th>Verb</th><th><code>main_gr.py</code> function</th><th>Launcher</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tzrec.gr.train_tokenizer</code></td><td><code>train_tokenizer()</code></td><td>torchrun</td><td>stock loop over <code>SidRqkmeans</code>/<code>SidRqvae</code></td></tr>
+<tr><td><code>tzrec.gr.assign_sid</code></td><td><code>assign_sid()</code></td><td>torchrun</td><td>predict-style pass; collision resolution; writes asset table + quality-gate report (<code>--output_table_path</code>)</td></tr>
+<tr><td><code>tzrec.gr.sft</code></td><td><code>sft()</code></td><td>torchrun</td><td>stage from <code>SftConfig.stage</code>; dense-parallelizer hook + GR pipeline</td></tr>
+<tr><td><code>tzrec.gr.rl</code></td><td><code>rl()</code></td><td>ray (verl)</td><td>renders <code>RlConfig</code> + <code>verl_overrides</code> into verl Hydra config; isolated conda env (<span class="risk">R-ENV</span>)</td></tr>
+<tr><td><code>tzrec.gr.eval</code></td><td><code>evaluate_gr()</code></td><td>torchrun</td><td>constrained-beam HR@K with SID&rarr;item expansion (<a href="#sec-13">&sect;13</a>)</td></tr>
+<tr><td><code>tzrec.gr.export</code></td><td><code>export_gr()</code></td><td>single rank (<code>WORLD_SIZE=1</code>)</td><td>AOTI single-step scorer + trie bundle; assets via <code>--additional_export_config</code></td></tr>
+<tr><td><code>tzrec.gr.serve</code></td><td><code>serve_gr()</code></td><td>single node</td><td>host beam driver over the exported scorer (<a href="#sec-10">&sect;10</a>)</td></tr>
+</tbody>
+</table>
+<figcaption>Table 12.1 — CLI verbs. <code>tzrec/main_gr.py</code> is an orchestration sibling of <code>main.py</code>, reusing <code>config_util</code>, <code>_create_features</code>, <code>create_dataloader</code>, and <code>CheckpointManager</code> verbatim.</figcaption>
+</figure>
+
+<h3 id="sec-12-8">12.8 Example (a): RQ-KMeans tokenizer training</h3>
+
+<p>The tokenizer is an ordinary tzrec model run: the item-embedding table is the training input, the precomputed embedding arrives as a dense <code>raw_feature</code> with <code>value_dim = input_dim</code> (consumed directly by <code>BaseSidModel._extract_feature</code>, bypassing <code>EmbeddingGroup</code>), and no labels are needed. <code>TrainConfig</code> requires both optimizer stanzas; for the k-means backend the codebooks are non-trainable buffers, so the optimizers are formal.</p>
+
+<pre><code>train_input_path: "odps://${PROJECT}/tables/item_embedding_table"
+model_dir: "${MODEL_DIR}/sid_rqkmeans_3x8192"
+train_config {
+    sparse_optimizer {
+        adagrad_optimizer { lr: 0.001 }
+        constant_learning_rate {}
+    }
+    dense_optimizer {
+        adam_optimizer { lr: 0.001 }
+        constant_learning_rate {}
+    }
+    num_epochs: 1
+}
+eval_config {}
+data_config {
+    batch_size: 65536
+    dataset_type: OdpsDataset
+    fg_mode: FG_NONE
+    num_workers: 8
+}
+feature_configs {
+    raw_feature {
+        feature_name: "item_embedding"
+        expression: "item:item_embedding"  # schema-required even under FG_NONE
+        value_dim: 4096            # Qwen3-Embedding-8B source vectors
+    }
+}
+model_config {
+    sid_rqkmeans {
+        embedding_feature_name: "item_embedding"
+        input_dim: 4096
+        normalize_residuals: true
+        codebook: 8192
+        codebook: 8192
+        codebook: 8192
+        kmeans_niter: 20
+        # D2 default (FORGE Random-5); use knn {...} instead when last-level
+        # code embeddings are reused as semantic features elsewhere
+        random { bucket_capacity: 5 }
+    }
+}
+</code></pre>
+
+<pre><code>torchrun --nproc-per-node=8 -m tzrec.gr.train_tokenizer \
+    --pipeline_config_path sid_rqkmeans_3x8192.config
+torchrun --nproc-per-node=8 -m tzrec.gr.assign_sid \
+    --pipeline_config_path sid_rqkmeans_3x8192.config \
+    --output_table_path odps://${PROJECT}/tables/item_sid_asset \
+    --quality_report_path ${MODEL_DIR}/sid_rqkmeans_3x8192/quality.json
+</code></pre>
+
+<h3 id="sec-12-9">12.9 Example (b): OpenOneRec-style SFT (stage 3, FSDP2)</h3>
+
+<p>Training samples are pre-tokenized offline with the <em>extended</em> Qwen3 tokenizer (<a href="#sec-6">&sect;6</a>): the prompt column is an <code>ARRAY&lt;BIGINT&gt;</code> of token ids whose history SIDs are already itemic tokens, and the two label columns carry the target SID ids and the per-token supervision mask. With <code>fg_mode: FG_NONE</code> these flow through existing parsing paths into <code>sparse_features</code> and <code>jagged_labels</code> with no new transport. The prompt feature is transport-only — the Qwen3 backbone consumes raw jagged token ids and owns the token embedding itself (<a href="#sec-7">&sect;7</a>); <code>embedding_dim</code> and <code>expression</code> are set only because the <code>IdFeature</code> schema requires them (both unused in <code>FG_NONE</code> transport-only mode), and <a href="#sec-6">&sect;6</a> defines how transport-only features skip table creation.</p>
+
+<pre><code>train_input_path: "odps://${PROJECT}/tables/onerec_sft_samples/ds=${BIZDATE}"
+eval_input_path: "odps://${PROJECT}/tables/onerec_sft_samples_eval"
+model_dir: "${MODEL_DIR}/open_one_rec_sft_stage3"
+train_config {
+    sparse_optimizer {
+        adagrad_optimizer { lr: 0.001 }
+        constant_learning_rate {}
+    }
+    dense_optimizer {
+        adamw_optimizer {
+            lr: 5e-6
+            beta1: 0.9
+            beta2: 0.95
+            weight_decay: 0.1
+        }
+        cosine_annealing_learning_rate {
+            T_max: 5000
+            warmup_size: 500
+            min_learning_rate: 1e-7
+        }
+    }
+    num_steps: 5000
+    mixed_precision: "BF16"
+    save_checkpoints_steps: 500
+}
+eval_config {
+    num_steps: 50
+}
+data_config {
+    batch_size: 32                 # raw rows; SequencePacker packs to 32K (Sec.6)
+    dataset_type: OdpsDataset
+    fg_mode: FG_NONE
+    label_fields: "response_sid_ids"
+    label_fields: "loss_mask"
+    num_workers: 4
+}
+feature_configs {
+    sequence_id_feature {
+        feature_name: "prompt_token_ids"     # extended-tokenizer ids, itemic SIDs inline
+        expression: "user:prompt_token_ids"  # schema-required; unused under FG_NONE
+        num_buckets: 176384
+        embedding_dim: 16                    # schema-required; transport-only (Sec.6)
+    }
+}
+model_config {
+    feature_groups {
+        group_name: "prompt"
+        feature_names: "prompt_token_ids"
+        group_type: JAGGED_SEQUENCE
+    }
+    open_one_rec {
+        backbone {
+            qwen3 {}
+            hf_model_path: "${HF_MODEL_DIR}/qwen3-1.7b-itemic-extended"
+            dense_backend: FSDP2
+            num_sid_levels: 3
+            codebook_size: 8192
+            itemic_id_range_begin: 151669
+            max_sequence_length: 32768
+        }
+        sft {
+            stage: MULTI_TASK_SFT
+            pack_max_length: 32768
+            use_chunked_loss: true
+        }
+    }
+}
+</code></pre>
+
+<pre><code>torchrun --nproc-per-node=8 -m tzrec.gr.sft \
+    --pipeline_config_path open_one_rec_sft_stage3.config \
+    --fine_tune_checkpoint ${MODEL_DIR}/open_one_rec_co_pretrain
+</code></pre>
+
+<p>Stage chaining is config-stable: stage 1 is the same file with <code>--edit_config_json '{"model_config.open_one_rec.sft.stage": "ITEMIC_TEXT_ALIGN", "model_config.open_one_rec.sft.start_optimize_embedding_index": 151669}'</code> plus a higher LR, and stage 2 flips to <code>CO_PRETRAIN</code> and adds weighted general-text <code>mixture_sources</code> — one launch script, four stages (<a href="#sec-8">&sect;8</a>).</p>
+
+</section>

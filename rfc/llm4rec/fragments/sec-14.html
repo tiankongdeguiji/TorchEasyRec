@@ -1,0 +1,110 @@
+<section>
+<h2 id="sec-14">14. Roadmap, testing, and dependencies</h2>
+
+<p>This section turns the design into an execution plan: six phases P0&ndash;P5, each a vertical slice that ships a runnable CLI verb (<a href="#sec-12">&sect;12</a>) and closes against a measurable exit gate, followed by the testing strategy (mapped onto tzrec's existing unittest conventions) and the dependency matrix. It updates the prior internal spec's roadmap (<code>09_roadmap_testing_risks.md</code>) with the evidence gathered for this RFC: the single-step export path is empirically de-risked, the tensorized trie is resolved by an existing open-source design, and the FSDP2-default decision (D8, <a href="#sec-11">&sect;11</a>) reorders which backend each phase exercises first. Reference repositories remain validation oracles, never dependencies.</p>
+
+<h3 id="sec-14-1">14.1 Phases P0&ndash;P5</h3>
+
+<div class="callout revision">
+<p class="callout-title">Revision vs prior spec 09 &mdash; three plan changes</p>
+<p>(a) <strong>P1 now targets Qwen3 on FSDP2</strong>, not Megatron: the OpenOneRec-proven recipe <a class="cite" href="#ref-openonerec">[openonerec]</a> lands first and the Megatron backend moves wholesale to P4, shrinking the riskiest early integration surface. (b) <strong>P2 starts from a proven baseline instead of an open risk</strong>: the AOTI single-step scorer was smoke-tested end to end on this machine (<span class="risk">R-EXPORT</span> de-risked) and the constrained-decode data structure is adopted from STATIC's published CSR design (<span class="risk">R-TRIE</span> resolved) <a class="cite" href="#ref-static">[static]</a><a class="cite" href="#ref-static-repo">[static-repo]</a>, so P2 is integration work, not research. (c) <strong><code>CO_PRETRAIN</code> is budgeted as a first-class stage inside P1</strong> rather than an optional mix knob, following PLUM's 2&times;2 ablation showing continued pre-training matters more than base-LLM choice (Recall@10 0.27 random-init+CPT vs 0.23 Gemini-init without CPT) <a class="cite" href="#ref-plum">[plum]</a>.</p>
+</div>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>Phase</th><th>Scope (deliverables)</th><th>Decisions landed</th><th>Exit gate</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>P0</strong> SID tokenizer</td>
+<td><code>SidRqkmeans</code>/<code>SidRqvae</code> models over <code>BaseSidModel</code>; collision resolvers + uniqueness digit; Gini / utilization / Embedding-HitRate metrics; <code>SidCatalogIndex</code>; <code>tzrec.gr.train_tokenizer</code> + <code>assign_sid</code>; ODPS SQL collision variant (<a href="#sec-5">&sect;5</a>)</td>
+<td>D1, D2, D3, D4</td>
+<td>RQ-KMeans per-level utilization &ge; 0.999; Gini below threshold with Embedding HitRate within tolerance of source-embedding kNN; post-resolution collision rate 0 at configured <code>bucket_capacity</code>; code-assignment parity vs OpenOneRec <code>ResKmeans</code> / AL-GR <a class="cite" href="#ref-repo-openonerec">[repo-openonerec]</a><a class="cite" href="#ref-repo-alsid">[repo-alsid]</a> and RQ-VAE parity vs LC-Rec / GRID <a class="cite" href="#ref-repo-lcrec">[repo-lcrec]</a><a class="cite" href="#ref-repo-grid">[repo-grid]</a></td>
+</tr>
+<tr>
+<td><strong>P1</strong> SFT generative retrieval</td>
+<td><code>BaseGenerativeModel</code> + <code>LCRec</code>(604) + <code>OpenOneRec</code>(600); <code>Qwen3GRBackbone</code> on <code>Fsdp2Parallelizer</code>; vocab-expansion tool (incl. stale-row re-init, <span class="risk">R-VOCAB-INIT</span>); instruction builder + 32K packing; staged SFT incl. <code>CO_PRETRAIN</code>; <code>tzrec.gr.sft</code>/<code>eval</code> (<a href="#sec-7">&sect;7</a>, <a href="#sec-8">&sect;8</a>)</td>
+<td>D5 (Qwen3 arm), D6, D7 (FSDP2 path), D8 (default)</td>
+<td>HR@K/NDCG@K within &plusmn;2% relative of LC-Rec and MiniOneRec on the same Amazon split with the same SID asset <a class="cite" href="#ref-lcrec">[lcrec]</a><a class="cite" href="#ref-minionerec">[minionerec]</a>; hierarchical <code>level_1/12/123</code> accuracies reproduced <a class="cite" href="#ref-repo-semanticids">[repo-semanticids]</a>; stage-1 frozen slice <code>[0, 151669)</code> bit-identical after N steps; both split losses (itemic/text) decrease in <code>CO_PRETRAIN</code></td>
+</tr>
+<tr>
+<td><strong>P2</strong> decode / export / serving</td>
+<td>CSR trie builder + <code>SidConstrainedLogitsProcessor</code>; AOTI <code>forward_step</code> export + host beam driver; <code>ALGR</code>(603) dynamic-width beam; <code>tzrec.gr.export</code>/<code>serve</code>; offline eval harness (<a href="#sec-10">&sect;10</a>, <a href="#sec-13">&sect;13</a>)</td>
+<td>D12, D13 (+ D4 multi-path scoring at eval)</td>
+<td>Exported step matches eager: bit-exact under <code>torch.export</code>, fp32-exact under AOTI, bf16 bounded by recorded logit-level fusion noise (&asymp;5e-3&ndash;8e-3 in the smoke run); constrained host beam reproduces HF <code>generate</code> beams and scores; trie legality identical to a reference hash-dict trie, illegal-emission count 0</td>
+</tr>
+<tr>
+<td><strong>P3</strong> RL</td>
+<td>verl GRPO zero-patch stack: AgentLoop YAML, engine-level trie LP, <code>custom_reward_function</code>, custom dataset; composable rewards; two-stage CoT+SID rollout; then ECPO/GBPO plugins; <code>OneRecV2</code>(602) GBPO-on-logged-feedback; <code>tzrec.gr.rl</code> (<a href="#sec-9">&sect;9</a>)</td>
+<td>D9, D10 (GRPO/ECPO/GBPO), D11 (Qwen3 rows), D14</td>
+<td>Reward monotonically improves on the MiniOneRec data setup and final HR@K &gt; the P1 SFT checkpoint; 100% rollout SID legality with constrained sampling; KL to reference bounded, no entropy collapse (<span class="risk">R-ENTROPY</span> monitors green); GBPO trains from logged feedback with zero rollout engine; vLLM OpenAI-endpoint beam emulation with the engine-level <code>SidConstrainedLogitsProcessor</code> under <code>processed_logprobs</code> passes a GPU smoke (source-verified only, per <a href="#sec-10">&sect;10</a>) before that serving topology is declared supported</td>
+</tr>
+<tr>
+<td><strong>P4</strong> scale &amp; efficiency</td>
+<td><code>MegatronParallelizer</code> (mbridge, TP, PP=1) + Megatron stage-1 row freezing; MoE/EP for <code>OneRecV1</code>(601)/V2 arms; dynamicemb 250M two-world; context-embedding injection (<span class="risk">R-INJECT</span>); planner headroom for dense LLM (<span class="risk">R-PLANNER</span>) (<a href="#sec-11">&sect;11</a>)</td>
+<td>D8 (scale-out), D7 (Megatron path), D5 (Lazy/EncDec arms), D11 (remaining rows)</td>
+<td>8B Qwen3 trains under Megatron TP at &ge; the ~23.7% MFU floor OneRec V1 reports for training <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a>; tokenization + assignment at AL-GR catalog scale (hundreds of millions of items) <a class="cite" href="#ref-forge">[forge]</a>; dynamicemb plan fits the HBM byte model; two-optimizer-tree step and two-root checkpoint verified under TP resharding</td>
+</tr>
+<tr>
+<td><strong>P5</strong> frontier parity</td>
+<td>Full OpenOneRec reproduction (3-stage SFT + GRPO + on-policy distillation); MiniOneRec config preset; reasoning extensions (RFT, stage-wise clipping, two-stage rollout at depth); Latte latent tokens and PIT co-evolution as options; optional MTP training flag (<a href="#sec-9">&sect;9</a>, <a href="#sec-2">&sect;2</a>)</td>
+<td>D10 (distillation, RFT), D15 (MTP flag), D16</td>
+<td>OpenOneRec parity on a RecIF-Bench subset; distillation recovers general-task perplexity toward the base Qwen3 while retaining rec reward; reasoning arm demonstrates CoT&rarr;SID two-stage decode end to end; all five model arms train/eval/export from one text-proto each</td>
+</tr>
+</tbody>
+</table>
+<figcaption>Phase plan. Each phase ships runnable CLI verbs and example configs under <code>examples/gr/</code>; decisions D1&ndash;D16 are defined in their owning sections.</figcaption>
+</figure>
+
+<p><strong>P0</strong> is CPU/single-GPU work measured in minutes per experiment, which is exactly why D1 makes RQ-KMeans the default and D3 makes the quality gates training-free: the P0 exit is a metric sweep, not a GPU-week. The asset contract (the <code>item_id&rarr;SID</code> parquet/ODPS table plus inverse index, <a href="#sec-5">&sect;5</a>) is the only seam later phases consume, so P0 can be re-run (new embeddings, new geometry) without invalidating downstream code.</p>
+
+<p><strong>P1</strong> carries the two-world integration risks that are pattern-proven but not yet integrated in tzrec: <span class="risk">R-DMP</span> (shard only the LLM subtree; the upstream <code>ddp_A_fsdp_B</code> test plus the recsys-examples wrapper-order precedent <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a> define the pattern) and <span class="risk">R-GRAD</span> (sparse fused in-backward step, then dense grad finalize, then dense optimizer step &mdash; the exact sequencing recsys-examples runs in production code). Both get dedicated 2-GPU integration tests before any model-quality work is trusted. P1 deliberately uses token-only prompts (SIDs as added tokenizer tokens), deferring context-embedding injection to P4 so that parity against LC-Rec/MiniOneRec is apples-to-apples.</p>
+
+<p><strong>P2</strong> is the phase whose risk profile changed most since the prior spec. The decode/export design (D13) was validated empirically on this machine: a Qwen3 single decode step with StaticCache exports via <code>torch.export</code> and compiles via AOTInductor on torch 2.11.0+cu129 / transformers 4.53.3 (tiny Qwen3, bf16, sdpa, batch 8), with host-side <code>index_select</code> KV-cache beam reorder bit-exact between exported-step calls, and a dynamic <code>Dim("batch")</code> explicit-cache-I/O variant serving B&isin;{4, 8, 24} from one artifact. The remaining P2 work is therefore productization: the real-scale artifact (vocab 176,384), the trie build job, and the two known serving gotchas (mandatory <code>.contiguous()</code> input guard; <code>GLIBCXX_3.4.30</code> on the dlopen path) wired into the export runner and PAI image checks.</p>
+
+<p><strong>P3</strong> lands on the verl 0.8 line with the zero-patch contract of D9; the GRPO defaults are adopted from OpenOneRec and the exit is deliberately a behavior gate (reward-up, legality, bounded KL) rather than a benchmark number, because RL gains are dataset-dependent. ECPO and GBPO follow as registered estimator/policy-loss plugins once the GRPO loop is green; GBPO additionally exercises the no-rollout data path (logged feedback with <code>gen_prob_logged</code>, <a href="#sec-6">&sect;6</a>). <strong>P4</strong> then scales out: the Megatron backend (including the backend-specific stage-1 freezing of D7, whose grad-zeroing recipe is already worked out against megatron-core 0.18 source), MoE/EP arms, the 250M-item dynamicemb path, and the one remaining open design task <span class="risk">R-INJECT</span>. <strong>P5</strong> is parity and frontier work; it intentionally contains everything with research risk (reasoning RL, PIT/Latte, MTP) so that P0&ndash;P4 form a shippable production core without it.</p>
+
+<h3 id="sec-14-2">14.2 Testing strategy</h3>
+
+<p>All new code follows tzrec's existing conventions: colocated <code>*_test.py</code> files under <code>unittest</code>, run via <code>tzrec/tests/run.py</code>, formatted and linted by the standard pre-commit stack. The GR-specific additions are organized around five rules, all of which already have precedents in the tree.</p>
+
+<ul>
+<li><strong>Case tables via <code>@parameterized.expand</code>.</strong> Tokenizer geometries (num_levels &times; codebook_size), collision resolvers, vocab-extension sizes, reward shapes, and trie traversals are classic case-table tests: one body, many input rows &mdash; never N near-identical methods or <code>subTest</code> loops.</li>
+<li><strong>Capability skips at the right granularity.</strong> GPU-dependent tests use the existing <code>@unittest.skipIf(gpu_unavailable)</code> probes from <code>tzrec/utils/test_util.py:38</code>. CI scope markers (<code>@mark_ci_scope("h20")</code>, <code>test_util.py:151</code>) go on classes or methods only &mdash; <strong>never module-level scope lists</strong> &mdash; so a single file can mix CPU-lane trie math with H20-lane Megatron tests. CI lanes reuse <code>scripts/ci/ci_test.sh</code> with <code>--scope</code> forwarding; no sibling CI scripts.</li>
+<li><strong>Optional-wheel probes via <code>importlib.util.find_spec</code>.</strong> The pattern is already in <code>test_util.py:43-51</code> (the <code>hstu</code> and <code>torch_fx_tool</code> probes, with the explicit comment that importing <code>test_util</code> must not drag heavyweight stacks into every test process). New probes: <code>faiss_unavailable</code>, <code>transformers_unavailable</code>, <code>megatron_unavailable</code>, <code>vllm_unavailable</code>, <code>verl_unavailable</code>. A bare <code>pip install tzrec</code> without any GR extra must still pass the full default test suite.</li>
+<li><strong>Subprocess isolation for global state.</strong> The <code>SUBPROC_TEST_PATTERN</code> list (<code>tzrec/tests/run.py:23</code>) gains the GR tests that mutate process globals: faiss/CUDA initialization in tokenizer training, <code>set_static_max_seq_lens</code> (process-global HSTU sizing), Megatron <code>parallel_state</code> (one parallel layout per process; must be destroyed between configurations), and HF tokenizer caches.</li>
+<li><strong>Numerical parity oracles as nightly H20-scope tests.</strong> The highest-value tests assert agreement with reference implementations rather than self-consistency: tokenizer code assignments vs OpenOneRec <code>ResKmeans</code> and AL-GR; LC-Rec eval parity (&plusmn;2% relative) on a fixed Amazon split; trie legality sets vs MiniOneRec's hash-dict trie (illegal count exactly 0, per the no-defensive-tolerance rule); GRPO advantages vs verl's <code>compute_grpo_outcome_advantage</code> at the pinned commit. These run nightly on the H20 lane, not per-PR.</li>
+</ul>
+
+<p>The P2 export tests have a concrete template: the smoke matrix from the de-risking study (export &rarr; multi-step eager parity &rarr; beam-reorder parity &rarr; AOTI compile &rarr; AOTI multi-step parity &rarr; dynamic-batch artifact) becomes a parameterized test class over {<code>torch.export</code> module, AOTI fp32, AOTI bf16} &times; {buffers cache, explicit-I/O cache}, with the tolerance discipline this codebase already uses for TRT: record pre-activation logit-level <code>max_abs_diff</code>, gate bf16 at the measured fusion-noise band, and require fp32 exactness rather than loosening a single global tolerance. A stride/contiguity assertion test reproduces the non-contiguous-input corruption gotcha so a regression in the <code>.contiguous()</code> guard fails loudly. End-to-end smoke configs live under <code>tzrec/tests/configs/gr/</code>, one per phase (tokenizer, SFT, export/serve, RL), mirroring the existing integration-test layout; the RL smoke runs the verl process tree from its own env and asserts only on artifacts (parquet handoff in, checkpoint + metrics out), keeping the env boundary (<span class="risk">R-ENV</span>) inside the test design.</p>
+
+<h3 id="sec-14-3">14.3 Dependency matrix</h3>
+
+<p>Core pins are unchanged from master (<code>requirements/runtime.txt</code>): existing tzrec users see no new mandatory dependency. Everything GR-specific is extras-gated (<code>pip install tzrec[gr]</code>, <code>tzrec[gr-megatron]</code>, &hellip;) and probed with <code>find_spec</code> at import/test time; the RL stack is not an extra at all but a separate environment (<span class="risk">R-ENV</span>), because ray/vllm dependency trees conflict with tzrec's <code>grpcio-tools&lt;1.63.0</code> / protobuf 4.x pin and verl always runs as its own process tree with a parquet/checkpoint handoff.</p>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>Dependency</th><th>Pin / line</th><th>Gating</th><th>First phase</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>torch</td><td>2.11.0 (existing)</td><td>core</td><td>&mdash;</td><td>FSDP2/DTensor/DCP surfaces and the AOTI export path were all validated on this pin (<a href="#sec-11">&sect;11</a>).</td></tr>
+<tr><td>torchrec / fbgemm-gpu</td><td>1.6.0 / 1.6.0 (existing)</td><td>core</td><td>&mdash;</td><td>Sparse world unchanged.</td></tr>
+<tr><td>torchmetrics</td><td>1.0.3 (existing)</td><td>core</td><td>&mdash;</td><td>GR eval metrics follow existing metric-module conventions (<a href="#sec-13">&sect;13</a>).</td></tr>
+<tr><td>grpcio-tools</td><td>&lt;1.63.0 (existing)</td><td>core (build)</td><td>&mdash;</td><td>Pins protobuf 4.x; tzrec uses the 4.x-only <code>including_default_value_fields</code> API. Fix environments, never upgrade protobuf.</td></tr>
+<tr><td>faiss-gpu</td><td>CUDA-matched build</td><td>extra <code>[gr]</code>, <code>find_spec</code></td><td>P0</td><td>RQ-KMeans residual k-means (D1) and Embedding-HitRate kNN; reuses <code>create_faiss_index</code> tooling.</td></tr>
+<tr><td>transformers <a class="cite" href="#ref-transformers">[transformers]</a></td><td><code>&gt;=4.53,&lt;5</code></td><td>extra <code>[gr]</code>, <code>find_spec</code></td><td>P1</td><td>Qwen3 classes (q/k-norm), <code>resize_token_embeddings(mean_resizing)</code>, the validated 4.53.x export recipe. v5 migration tracked, not adopted: known drift (ctor renames, <code>StaticCache</code> layer objects with new <code>cumulative_length_{i}</code> buffers, <code>sdpa_without_vmap</code> removal) is isolated behind one version shim; the export smoke matrix re-runs before any pin move.</td></tr>
+<tr><td>flash-attn</td><td>tracked build for the pinned torch</td><td>extra <code>[gr]</code>, <code>find_spec</code></td><td>P1</td><td>Hard requirement of 32K sample packing (D6): only varlen FA kernels honor <code>cu_seqlens</code> document boundaries; SDPA/eager silently cross-attend across packed documents, so packing fails loudly when absent.</td></tr>
+<tr><td>megatron-core <a class="cite" href="#ref-megatron">[megatron]</a></td><td>0.18.0 <strong>released wheel</strong></td><td>extra <code>[gr-megatron]</code>, <code>find_spec</code></td><td>P4</td><td><strong>Gotcha:</strong> the dev checkout (HEAD) requires Python &ge; 3.12 while the tzrec env is py3.11 &mdash; pin the released wheel, never vendor HEAD. TE/Apex optional via <code>get_gpt_layer_local_spec</code>; THD packed sequences require the TE spec.</td></tr>
+<tr><td>mbridge <a class="cite" href="#ref-mbridge">[mbridge]</a></td><td>pinned release</td><td>extra <code>[gr-megatron]</code></td><td>P4</td><td>HF&harr;mcore weight bridge (D8); builds <code>GPTModel(vocab_size=176384)</code> with no extra padding, so HF and mcore shapes match exactly (<a href="#sec-7">&sect;7</a>).</td></tr>
+<tr><td>dynamicemb</td><td>existing build</td><td>optional wheel, <code>find_spec</code></td><td>P4</td><td>250M-item tables, ROW_WISE; existing tzrec integration reused.</td></tr>
+<tr><td>fbgemm_gpu_hstu</td><td>existing wheel (OSS bucket)</td><td>optional wheel, existing probe</td><td>P1 (HSTU arm)</td><td><code>find_spec("hstu")</code> probe already in <code>test_util.py:47</code>; needed only for <code>InhouseHstuGRBackbone</code>.</td></tr>
+<tr><td>gr_decode_atten</td><td>vendored snapshot (recsys-examples pin)</td><td>optional wheel, <code>find_spec</code></td><td>post-v1</td><td>Beam-decode attention kernel; D13 ships the reorder-based host loop first and treats this as a later latency optimization.</td></tr>
+<tr><td>verl <a class="cite" href="#ref-verl">[verl]</a></td><td>pinned commit on the 0.8 line (studied @ <code>8232babc</code>)</td><td><strong>separate conda env / image</strong> (<span class="risk">R-ENV</span>)</td><td>P3</td><td>Zero source patches (D9); all extension points are config-level. Never importable from the tzrec process; integration is artifact handoff.</td></tr>
+<tr><td>vllm <a class="cite" href="#ref-vllm">[vllm]</a></td><td>0.12 line, pinned pair with verl (<span class="risk">R-VLLM-PIN</span>)</td><td>RL env only</td><td>P3</td><td>verl's declared bound (<code>&gt;=0.8.5,&lt;=0.12.0</code>) is stale &mdash; its code carries branches for newer lines &mdash; so the pin is an exact verl+vllm pair per image, re-validated by the P3 smoke. <code>logprobs_mode="processed_logprobs"</code> (required by D12's constrained ranking) does not exist on the 0.8.5 line.</td></tr>
+<tr><td>ray</td><td>per verl pin (&ge;2.41)</td><td>RL env only</td><td>P3</td><td>Transitive via verl; one more reason the RL env is isolated.</td></tr>
+</tbody>
+</table>
+<figcaption>Dependency matrix. "Core" = unchanged master pins; "extra" = optional install group probed by <code>find_spec</code>; the RL stack is environment-isolated rather than extras-gated.</figcaption>
+</figure>
+
+<p>Two cross-cutting rules complete the matrix. First, every new wheel is first installed into a clone of the baseline conda env, never upgraded in place, so a bad build cannot poison the working environment. Second, any dependency whose API surface this RFC quotes (verl, vllm, transformers, megatron-core) is referenced with an explicit version tag in code comments and docs; the pins above are the only versions for which the claims in <a href="#sec-9">&sect;9</a>&ndash;<a href="#sec-11">&sect;11</a> were verified.</p>
+
+</section>

@@ -1,0 +1,131 @@
+<section>
+<h2 id="sec-15">15. Risk register and alternatives considered</h2>
+
+<p>This section owns the canonical risk register for the whole RFC: every risk ID used elsewhere (<span class="risk">R-INJECT</span>, <span class="risk">R-EXPORT</span>, &hellip;) resolves to exactly one row below, with a current status, a concrete mitigation, and a proof obligation tied to a phase gate from <a href="#sec-14">&sect;14</a>. It then records the build-vs-adopt alternatives that were considered and rejected, so the same debates do not reopen later. Relative to the prior spec's register, two statuses changed on new evidence (<span class="risk">R-EXPORT</span> de-risked, <span class="risk">R-TRIE</span> resolved) and the old R-VERL risk is superseded by the sharper pair <span class="risk">R-VLLM-PIN</span> (API drift) and <span class="risk">R-ENV</span> (environment isolation).</p>
+
+<h3 id="sec-15-1">15.1 Risk register</h3>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>ID</th><th>Area</th><th>Status</th><th>Mitigation</th><th>Proof obligation</th></tr></thead>
+<tbody>
+<tr>
+<td><span class="risk">R-INJECT</span></td>
+<td>Context-embedding injection (sparse&rarr;dense bridge)</td>
+<td><strong>Open</strong> &mdash; the last unproven design task; scheduled P4</td>
+<td>Mechanically enumerated adapter at the world boundary: fp32&rarr;bf16 cast, layout transpose, in-place overwrite of itemic feature slots in <code>inputs_embeds</code> (HF) / <code>decoder_input</code> (mcore) with <code>position_ids</code>/RoPE untouched (<a href="#sec-7">&sect;7</a>). P1&ndash;P3 deliberately run token-only prompts so nothing upstream depends on it.</td>
+<td>Bit-layout unit test of the adapter + logit-level parity vs a hand-built single-process reference; P4 exit.</td>
+</tr>
+<tr>
+<td><span class="risk">R-DMP</span></td>
+<td>DMP + <code>fully_shard</code> coexistence on one model</td>
+<td><strong>Pattern-proven</strong> &mdash; integration task, P1</td>
+<td>The exact composition is pinned by an upstream PyTorch test (<code>test_fully_shard_ignore_params.py::test_ddp_A_fsdp_B_ddp_C</code>) <a class="cite" href="#ref-pytorch">[pytorch]</a> and by recsys-examples' production wrapper ordering <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>: shard only the LLM subtree, register its param FQNs as DDP-ignored in TorchRec's dense wrapper (<a href="#sec-11">&sect;11</a>).</td>
+<td>2-GPU test asserting dense params are FSDP-sharded (not DDP-replicated) while sparse tables still all-to-all; P1.</td>
+</tr>
+<tr>
+<td><span class="risk">R-GRAD</span></td>
+<td>Two-world gradient/step sequencing</td>
+<td><strong>Sequence-proven</strong> &mdash; integration task, P1</td>
+<td>Adopt recsys-examples' per-step order verbatim: zero grad buffers &rarr; forward/backward (sparse optimizers step fused in-backward) &rarr; dense grad finalize &rarr; dense <code>optimizer.step()</code> <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>, expressed as an explicit ordering point in the GR train pipeline rather than a hidden hook.</td>
+<td>Toy two-tree step-ordering test vs a single-process reference (identical final weights); P1.</td>
+</tr>
+<tr>
+<td><span class="risk">R-EXPORT</span></td>
+<td>Single-step decode scorer export (AOTI)</td>
+<td><strong>DE-RISKED</strong> &mdash; smoke-proven on this machine (torch 2.11.0+cu129, transformers 4.53.3)</td>
+<td>Empirical matrix passed: <code>torch.export</code> step bit-exact vs eager over multi-step decode; host <code>index_select</code> beam reorder bit-exact; AOTI fp32-exact / bf16 within fusion noise; dynamic-batch explicit-cache-I/O artifact (<a href="#sec-10">&sect;10</a>). Guards productized: mandatory <code>.contiguous()</code> on every input (AOTI silently corrupts on non-contiguous strides) and <code>GLIBCXX_3.4.30</code> check on the dlopen path.</td>
+<td>Residuals at P2: real-scale artifact (vocab 176,384) latency/size on PAI GPUs; per-row <code>cache_position</code> for mixed prefix lengths; re-run of the smoke matrix before any transformers-v5 pin move.</td>
+</tr>
+<tr>
+<td><span class="risk">R-TRIE</span></td>
+<td>Constrained-decode trie at beam width up to 512</td>
+<td><strong>RESOLVED</strong> &mdash; design adopted from STATIC <a class="cite" href="#ref-static">[static]</a><a class="cite" href="#ref-static-repo">[static-repo]</a></td>
+<td>Flatten the catalog trie to a packed CSR + per-depth dense masks; one batched gather per decode step, O(1) in catalog size; &asymp;1.2&ndash;3.1 GB resident for 3&times;8192 / 250M items depending on layout (<a href="#sec-10">&sect;10</a>). Same artifact serves HF eval, the vLLM logits processor, and the host beam driver (D12).</td>
+<td>Offline build job + memory-budget check; legality parity vs a reference hash-dict trie with illegal count exactly 0; GPU step-latency benchmark (published numbers are TPU); P2.</td>
+</tr>
+<tr>
+<td><span class="risk">R-FGJOIN</span></td>
+<td>fg-side (C++ pyfg) item&rarr;SID join</td>
+<td><strong>Future</strong> &mdash; explicitly out of v1</td>
+<td>v1 standardizes the offline join: <code>assign_sid</code> writes precomputed per-position SID columns consumed with <code>fg_mode=FG_NONE</code> (<a href="#sec-6">&sect;6</a>). A pyfg asset-map join is a later optimization with its own design.</td>
+<td>P1 trains end to end from offline-joined tables; no parse-time join anywhere in v1.</td>
+</tr>
+<tr>
+<td><span class="risk">R-VLLM-PIN</span></td>
+<td>vLLM API drift across 0.8.5&ndash;0.12</td>
+<td><strong>Open, managed</strong></td>
+<td>Pin exact verl+vllm pairs per image; verl's declared upper bound is stale, so the pair is validated by the P3 smoke, not trusted from metadata. Constraint injection rides the two most stable surfaces (engine-level <code>logits_processors</code> registration, <code>SamplingParams.extra_args</code> passthrough); every quoted API carries a version tag (<a href="#sec-9">&sect;9</a>, <a href="#sec-14-3">&sect;14.3</a>).</td>
+<td>Pinned-pair GRPO smoke (rollout + constrained sampling + reward) green before any pin move; P3.</td>
+</tr>
+<tr>
+<td><span class="risk">R-LEGALITY</span></td>
+<td>RL emits illegal / off-catalog SIDs</td>
+<td><strong>Open, mitigated by design</strong></td>
+<td>Constrained sampling via the trie logits processor under <code>logprobs_mode="processed_logprobs"</code> keeps rollouts 100% legal; <code>SidLegalityReward</code> stays on as a pure diagnostic (any non-zero illegal count means constrained decode silently regressed); illegal rollouts are discarded, never reward-penalized (D14); format reward credits well-formed SID blocks (<a href="#sec-9">&sect;9</a>).</td>
+<td>P3 exit: 100% rollout legality; illegal-count monitor wired into RL logging and alarmed at &gt; 0.</td>
+</tr>
+<tr>
+<td><span class="risk">R-ENTROPY</span></td>
+<td>SID distribution collapse under RL</td>
+<td><strong>Open</strong></td>
+<td>GRPO defaults proven in the OpenOneRec recipe (KL-in-loss <code>low_var_kl</code> at 0.001, asymmetric clip with high 0.28) <a class="cite" href="#ref-openonerec">[openonerec]</a>; ECPO/GBPO bound the ratio by construction <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a><a class="cite" href="#ref-onerec-v2">[onerec-v2]</a>; <code>DiversityReward</code> and a first-digit diversity monitor give an early collapse signal (<a href="#sec-9">&sect;9</a>, <a href="#sec-13">&sect;13</a>).</td>
+<td>P3 exit: KL bounded; distinct-SID count per rollout group and first-level token entropy tracked across training with no monotone collapse.</td>
+</tr>
+<tr>
+<td><span class="risk">R-FORGET</span></td>
+<td>Catastrophic forgetting of general LLM capability</td>
+<td><strong>Open</strong>, severity scoped by product surface</td>
+<td>Layered: <code>CO_PRETRAIN</code> general-domain mix (D6); split itemic/text loss logging so rising text loss is an alarm, not a post-mortem (<a href="#sec-8">&sect;8</a>); on-policy reverse-KL distillation to the base Qwen3 as active repair (D10). PLUM shows a retrieval-only product can merely monitor forgetting <a class="cite" href="#ref-plum">[plum]</a>; tzrec ties the mitigation budget to whether language-facing tasks are in scope.</td>
+<td>P1: text benchmarks tracked through CPT; P5: distillation recovers general perplexity toward base Qwen3 while rec reward is retained.</td>
+</tr>
+<tr>
+<td><span class="risk">R-ENV</span></td>
+<td>RL environment conflicts (ray/vllm vs tzrec protobuf pins)</td>
+<td><strong>Open, managed by isolation</strong></td>
+<td>verl/vllm/ray live in a dedicated conda env or image, never co-installed with tzrec (<code>grpcio-tools&lt;1.63.0</code> / protobuf 4.x would conflict); integration is process-level with parquet and checkpoint handoff; new wheels go into cloned envs, never in-place upgrades (<a href="#sec-14-3">&sect;14.3</a>).</td>
+<td>P3 end-to-end RL smoke runs across the two-env boundary and asserts only on handoff artifacts.</td>
+</tr>
+<tr>
+<td><span class="risk">R-VOCAB-INIT</span></td>
+<td>267 stale embedding rows <code>[151669, 151936)</code></td>
+<td><strong>Resolved by design</strong> (must not regress)</td>
+<td>HF <code>resize_token_embeddings(mean_resizing=True)</code> only initializes rows &ge; 151936; the first 267 itemic tokens land on Qwen's untrained dummy rows &mdash; a bug OpenOneRec shipped. tzrec's vocab-expansion tool explicitly re-initializes that range from the same fitted distribution and asserts <code>vocab % 256 == 0</code> at generation time and <code>vocab % tp == 0</code> at startup (<a href="#sec-7">&sect;7</a>).</td>
+<td>Unit test: after expansion, no row in <code>[151669, 176384)</code> retains the base checkpoint's shipped values; row statistics match the fitted &mu;/&Sigma;.</td>
+</tr>
+<tr>
+<td><span class="risk">R-RETOK</span></td>
+<td>Re-tokenization cadence for streaming corpora</td>
+<td><strong>Open</strong> &mdash; operational, post-v1</td>
+<td>Reduce the pressure at the source: content-only tokenizer inputs with the behavioral signal injected as a co-occurrence training objective (PLUM's design rationale: CF-embedding inputs drift with popularity and force frequent retokenization) <a class="cite" href="#ref-plum">[plum]</a>; version every SID asset + trie artifact together; new items get SIDs by encoding without retraining. PIT-style tokenizer&ndash;recommender co-evolution is the phase-2 answer (D16) <a class="cite" href="#ref-pit">[pit]</a>.</td>
+<td>Monitor unique-SID ratio and Gini on fresh catalog snapshots; define a retokenize-when threshold before any streaming deployment.</td>
+</tr>
+<tr>
+<td><span class="risk">R-PLANNER</span></td>
+<td>TorchRec planner ignores dense LLM memory</td>
+<td><strong>Open</strong> &mdash; known failure mode</td>
+<td>The planner budgets HBM for embedding shards with only a heuristic reservation (default 15%) and knows nothing about LLM params, optimizer state, or activations &mdash; a known OOM mode. Mitigation: raise <code>STORAGE_RESERVE_PERCENT</code> by the measured dense footprint, force global row-wise constraints for large tables, fail loud when the dense budget is unconfigured (<a href="#sec-11">&sect;11</a>).</td>
+<td>P4: 250M-item dynamicemb plan fits the HBM byte model with the 8B dense world resident; OOM-free 2-node soak run.</td>
+</tr>
+</tbody>
+</table>
+<figcaption>Canonical risk register. Status legend: <strong>DE-RISKED / RESOLVED</strong> = design validated by experiment or adopted proven design, residual work is productization; <strong>pattern-/sequence-proven</strong> = external precedent pins the design, tzrec integration still owes a test; <strong>open</strong> = active design or operational risk with a scheduled proof.</figcaption>
+</figure>
+
+<h3 id="sec-15-2">15.2 Alternatives considered (and why rejected)</h3>
+
+<p>Each alternative below was seriously considered &mdash; most are the stack some reference implementation actually uses. The recurring rejection reason is ownership: tzrec already owns the process group, the train loop, the optimizer tree, and a proto-based config system, and any framework that insists on owning one of those becomes a second source of truth.</p>
+
+<ul>
+<li><strong>DeepSpeed (LC-Rec's training path).</strong> LC-Rec fine-tunes its LLM under DeepSpeed ZeRO-3 <a class="cite" href="#ref-repo-lcrec">[repo-lcrec]</a>, so it is a proven recipe for exactly our P1 workload. But ZeRO-3 is functionally redundant with in-tree FSDP2 (D8) while adding a second engine that wants to own initialization, optimizer construction, and checkpoint format &mdash; all places TorchRec DMP and tzrec's <code>CombinedOptimizer</code> tree already sit. One sharding runtime for the dense world is enough; the prior spec's non-goal stands.</li>
+<li><strong>TRL / Unsloth (MiniOneRec and semantic-ids-llm precedent).</strong> MiniOneRec runs its whole GRPO loop as a forked TRL <code>GRPOTrainer</code> under accelerate, and semantic-ids-llm uses the same family of single-node tooling <a class="cite" href="#ref-repo-minionerec">[repo-minionerec]</a><a class="cite" href="#ref-repo-semanticids">[repo-semanticids]</a> &mdash; excellent existence proofs (we adopt their trie and reward mechanics) but a single-node, &le;8-GPU ceiling with HF <code>generate</code> rollouts, no server-mode inference engine, no Megatron path, and no story for bridging TorchRec sparse tables. verl provides the same algorithms with a scale path and zero-patch extension points (D9).</li>
+<li><strong>PyTorch Lightning + Hydra (GRID's stack).</strong> GRID organizes tokenizer and retrieval training under Lightning modules with Hydra config composition <a class="cite" href="#ref-repo-grid">[repo-grid]</a>. Both layers are orchestration owners: Lightning wants the loop (and its own checkpoint/callback model), Hydra wants config authority. tzrec's loop is <code>tzrec/main.py</code> + protobuf configs, and the GR pipeline must stay a peer of every other tzrec model family &mdash; adding a second orchestration layer for one model family would fork operational knowledge. GRID remains a P0 validation oracle.</li>
+<li><strong>Building on NVIDIA recsys-examples directly.</strong> It is the closest existing two-world codebase, and this RFC mirrors several of its patterns outright (wrapper order, grad sequencing, beam KV-cache design) <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>. As a base, though, it is Megatron-pinned (parallel_state as the single source of parallel truth, gin-config, no FSDP2 path), has no proto config surface, no ODPS/Kafka/PAI integration, and its checkpoint format is world-size-locked for the dense part. We import the patterns with citations, not the framework.</li>
+<li><strong>Pure-Megatron training loop (<code>megatron.training.pretrain</code>).</strong> The harness assumes it owns the process: argparse-driven global <code>args</code>, its own tokenizer/vocab-padding flow (which would silently disagree with the HF-side 176,384 vocab), its own dataloaders and checkpoint cadence. megatron-core as a library (models, parallel groups, DDP, DistributedOptimizer, dist-checkpointing) is exactly what D8's <code>MegatronParallelizer</code> embeds; <code>megatron.training</code> is not (<a href="#sec-11">&sect;11</a>) <a class="cite" href="#ref-megatron">[megatron]</a>.</li>
+<li><strong>accelerate as a runtime dependency.</strong> Rejected for PG/optimizer ownership reasons; the useful part &mdash; the ~150-line FSDP2 layering recipe &mdash; is ported with citation instead. Full analysis in <a href="#sec-11-5">&sect;11.5</a> <a class="cite" href="#ref-accelerate">[accelerate]</a>.</li>
+<li><strong>HF <code>Trainer</code> for SFT.</strong> Brings its own Accelerator, dataloader sharding, and checkpoint layout; incompatible with the two-world step sequencing and the unified DCP checkpoint. Covered in <a href="#sec-11-4">&sect;11.4</a> <a class="cite" href="#ref-transformers">[transformers]</a>.</li>
+</ul>
+
+<p>A final non-alternative worth recording: <em>not</em> building the generative path inside tzrec at all, i.e., running OpenOneRec or a fork as a sidecar system. This fails the requirement that motivated the RFC &mdash; feature pipelines, samplers, 250M-item embedding infrastructure, checkpointing, and PAI deployment already live in tzrec, and every reference stack would need all of them rebuilt or bridged. The two-world design exists precisely so the LLM joins tzrec's world rather than the reverse (<a href="#sec-4">&sect;4</a>).</p>
+
+</section>

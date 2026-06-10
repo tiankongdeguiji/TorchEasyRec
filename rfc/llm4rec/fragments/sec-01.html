@@ -1,0 +1,67 @@
+<section>
+<h2 id="sec-1">1. Executive summary</h2>
+
+<p>This RFC proposes extending TorchEasyRec (<code>tzrec</code>) into a production framework for <strong>LLM- and SID-based generative recommendation</strong>: predicting the next item directly, as a short sequence of Semantic-ID (SID) tokens emitted autoregressively by a transformer language model, instead of scoring candidates through a retrieval/ranking cascade. The design covers the full pipeline — SID tokenization, supervised fine-tuning (SFT) and continued pre-training, reinforcement learning (RL), and constrained-decoding inference/serving — and specifies precisely how tzrec leverages PyTorch 2.11, Megatron-core 0.18, HuggingFace Transformers, Accelerate, and verl for efficient multi-GPU and distributed training.</p>
+
+<p>The proposal is grounded in a systematic study of the OneRec family (V1, V2, OneRec-Think, OneReason <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a><a class="cite" href="#ref-onerec-v2">[onerec-v2]</a><a class="cite" href="#ref-onerec-think">[onerec-think]</a><a class="cite" href="#ref-onereason">[onereason]</a>), the open reproductions OpenOneRec and MiniOneRec <a class="cite" href="#ref-openonerec">[openonerec]</a><a class="cite" href="#ref-minionerec">[minionerec]</a>, industrial SID-construction work (ALGR/FORGE at Alibaba, PLUM at YouTube <a class="cite" href="#ref-forge">[forge]</a><a class="cite" href="#ref-plum">[plum]</a>), the academic line (LC-Rec, GRID, Latte, PIT, RPG <a class="cite" href="#ref-lcrec">[lcrec]</a><a class="cite" href="#ref-grid">[grid]</a><a class="cite" href="#ref-latte">[latte]</a><a class="cite" href="#ref-pit">[pit]</a><a class="cite" href="#ref-rpg">[rpg]</a>), and source-level reviews of the five infrastructure stacks plus NVIDIA's recsys-examples two-world integration <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>. It supersedes the internal v1 spec under <code>experiments/llm4rec/</code>: the architecture and canonical names are retained, while a small number of decisions are revised with new evidence (each marked <em>Revision</em> in place; see <a href="#sec-4">&sect;4</a>).</p>
+
+<h3 id="sec-1-1">1.1 The shape of the design</h3>
+
+<p><strong>Two-world training.</strong> Recommendation models have two kinds of parameters with incompatible scaling behavior. Sparse embedding tables (item IDs, user features, SID codebooks — up to 250M rows) stay in the TorchRec world tzrec already owns: model-parallel sharding via <code>DistributedModelParallel</code>, fused in-backward optimizers, dynamicemb hash tables. The dense LLM trunk (0.1B&ndash;8B+ parameters) joins a new dense world: FSDP2 <code>fully_shard</code> by default, Megatron-core tensor/expert parallelism at scale. Both worlds share one <code>torch.distributed</code> WORLD, one <code>DeviceMesh</code>, two optimizer trees, and one unified DCP checkpoint. The bridge between them is activation-level: TorchRec produces context embeddings that enter the LLM as <code>inputs_embeds</code>. This is the same integration shape NVIDIA's recsys-examples proves out for HSTU at scale, adapted to tzrec's existing seams (<a href="#sec-11">&sect;11</a>).</p>
+
+<p><strong>Four subsystems, all config-driven.</strong> (1) A SID tokenizer subsystem (<code>tzrec/sid/</code>) builds on the <code>ResidualQuantizer</code>/<code>BaseSidModel</code> base classes already on master: RQ-KMeans and RQ-VAE quantizers, pluggable collision resolution, training-free quality metrics, and a many-to-many item&harr;SID catalog (<a href="#sec-5">&sect;5</a>). (2) An SFT/pretraining pipeline runs the staged curriculum every successful system converges on — itemic-text alignment &rarr; co-pretraining &rarr; multi-task SFT &rarr; rejection-sampling fine-tuning — inside tzrec's existing train loop via a new pipeline class (<a href="#sec-8">&sect;8</a>). (3) An RL subsystem targets verl 0.8 with zero framework patches for Qwen3-class backbones, plus a tzrec-native rollout loop for architectures vLLM cannot serve, and GBPO-style learning from logged real feedback with no rollouts at all (<a href="#sec-9">&sect;9</a>). (4) A decoding/serving stack pairs an AOTInductor-exported single-step scorer with a host-side beam driver and a STATIC-style CSR tensorized trie for constrained decoding (<a href="#sec-10">&sect;10</a>).</p>
+
+<h3 id="sec-1-2">1.2 What is new since the v1 spec</h3>
+
+<ul>
+<li><strong>FSDP2 becomes the default dense backend</strong> (D8); Megatron-core is the scale-out path for MoE/EP and ~8B+. OpenOneRec trains all stages on raw <code>fully_shard</code>; PyTorch 2.11's DCP, DeviceMesh, and DDP-composability APIs make the TorchRec bridge native (<a href="#sec-11">&sect;11</a>).</li>
+<li><strong>Constrained decoding is resolved, not open</strong>: YouTube's STATIC flattens the SID trie into CSR tensors — one batched gather per decode step, ~1.2&ndash;3.1&nbsp;GB at 3&times;8192 over 250M items <a class="cite" href="#ref-static">[static]</a> (D12). Unconstrained beam with post-grounding is a supported config, with GRID/PLUM evidence that it is often sufficient.</li>
+<li><strong>Single-step scorer export is de-risked empirically</strong>: a Qwen3 decode step with a static KV cache was validated on this machine (torch 2.11, transformers 4.53) — the <code>torch.export</code> module matches eager bit-exactly, host-side beam reordering included; the AOTInductor compile is fp32-exact, with bf16 logits within &asymp;5e-3&ndash;8e-3 fusion-reorder noise — with two sharp edges (input contiguity, GLIBCXX) documented in <a href="#sec-10">&sect;10</a> (D13).</li>
+<li><strong>The vocabulary-extension math is corrected</strong> (total-vocab padding to 176,384, not block padding), and a latent OpenOneRec bug is fixed by contract: HF <code>mean_resizing</code> leaves the first 267 itemic rows uninitialized (<a href="#sec-7">&sect;7</a>).</li>
+<li><strong>Collision resolution defaults to <code>RandomCollisionResolver</code></strong>: FORGE's Random-5 strictly dominates every KNN setting on both AL-GR and Amazon <a class="cite" href="#ref-forge">[forge]</a>, so the default flips from KNN-&sigma;; KNN-&sigma; remains an option where last-level semantics matter (<a href="#sec-5">&sect;5</a>).</li>
+<li><strong>Stage-1 embedding freezing is backend-specific</strong> (D7): the DTensor restore-after-step trick is proven on FSDP2 but <em>broken</em> under Megatron's DistributedOptimizer fp32 masters; the correct Megatron mechanism is gradient zeroing after <code>finalize_model_grads</code> plus a weight-decay override (<a href="#sec-8">&sect;8</a>).</li>
+<li><strong>Item&harr;SID is many-to-many from day one</strong> (D4): FORGE collision buckets, PIT's dynamic top-B index, and Latte's latent trees all break one-SID-per-item; the catalog, decoder, and metrics are specified accordingly (<a href="#sec-5">&sect;5</a>, <a href="#sec-10">&sect;10</a>).</li>
+<li><strong>New algorithm coverage</strong>: OneRec-Think/OneReason reasoning recipes (two-stage rollouts, stage-wise clipping, RFT, on-policy distillation), PLUM's co-pretraining and evaluation lessons, PIT/Latte/RPG extensions — folded into D10, D15, D16.</li>
+</ul>
+
+<h3 id="sec-1-3">1.3 Decision index</h3>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>ID</th><th>Decision (one line)</th><th>Owner</th></tr></thead>
+<tbody>
+<tr><td>D1</td><td>RQ-KMeans default + RQ-VAE option, packaged as tzrec models (<code>SidRqkmeans</code>/<code>SidRqvae</code>) over the existing <code>BaseSidModel</code></td><td><a href="#sec-5">&sect;5</a></td></tr>
+<tr><td>D2</td><td>Collision resolution is a pluggable post-processing stage (KNN-&sigma;, random round-robin, uniqueness digit; ODPS SQL at catalog scale)</td><td><a href="#sec-5">&sect;5</a></td></tr>
+<tr><td>D3</td><td>Tokenizer quality gates are training-free (Gini, utilization, unique-SID ratio, Embedding HitRate); never select by reconstruction loss</td><td><a href="#sec-5">&sect;5</a></td></tr>
+<tr><td>D4</td><td>Item&harr;SID catalog is many-to-many from day one, with multi-path scoring and dedup</td><td><a href="#sec-5">&sect;5</a></td></tr>
+<tr><td>D5</td><td>Four backbones (Qwen3, LazyDecoder, EncoderDecoder, InhouseHSTU) behind level-agnostic head/decoder abstractions</td><td><a href="#sec-7">&sect;7</a></td></tr>
+<tr><td>D6</td><td>Staged SFT curriculum with co-pretraining as a first-class stage; 32K sample packing requires a flash-attention backend</td><td><a href="#sec-8">&sect;8</a></td></tr>
+<tr><td>D7</td><td>Stage-1 itemic-row freezing: DTensor restore on FSDP2; grad-zeroing + wd override on Megatron</td><td><a href="#sec-8">&sect;8</a></td></tr>
+<tr><td>D8</td><td>Dense parallelism: FSDP2 default, Megatron scale-out; never <code>Accelerator.prepare</code> — port its FSDP2 layering instead</td><td><a href="#sec-11">&sect;11</a></td></tr>
+<tr><td>D9</td><td>RL on verl 0.8 with zero framework patches (custom agent loop, engine-level trie logits processor, custom rewards/dataset)</td><td><a href="#sec-9">&sect;9</a></td></tr>
+<tr><td>D10</td><td>GRPO default; ECPO/GBPO as plugins; on-policy distillation for capability retention; RFT + stage-wise clipping for reasoning</td><td><a href="#sec-9">&sect;9</a></td></tr>
+<tr><td>D11</td><td>Rollout decision matrix per backbone family (verl/vLLM where possible; tzrec-native loop for enc-dec and HSTU; GBPO needs none)</td><td><a href="#sec-9">&sect;9</a></td></tr>
+<tr><td>D12</td><td>Constrained decoding via STATIC-style CSR tensorized trie; unconstrained + post-grounding as a supported config</td><td><a href="#sec-10">&sect;10</a></td></tr>
+<tr><td>D13</td><td>Serving = host-side beam driver over an AOTI-exported single-step scorer (empirically proven); RTP-LLM/vLLM as engine alternatives</td><td><a href="#sec-10">&sect;10</a></td></tr>
+<tr><td>D14</td><td>Composable rewards: reward-model (P-Score), duration-aware shaping, legality/format (discard, never penalize), diversity</td><td><a href="#sec-9">&sect;9</a></td></tr>
+<tr><td>D15</td><td>MTP auxiliary loss as a v1.5 flag; parallel/speculative/diffusion decode as future work the interfaces must not preclude</td><td><a href="#sec-7">&sect;7</a></td></tr>
+<tr><td>D16</td><td>Latte latent tokens as a cheap option; PIT tokenizer co-evolution as a phase-2 streaming extension</td><td><a href="#sec-5">&sect;5</a></td></tr>
+</tbody>
+</table>
+<figcaption>Binding decisions. Each is elaborated with rationale and evidence in its owning section.</figcaption>
+</figure>
+
+<h3 id="sec-1-4">1.4 Non-goals (v1)</h3>
+
+<ul>
+<li>No raw-pixel/multimodal encoders inside tzrec: the multimodal item embedding is an upstream artifact consumed as a parquet/ODPS column (<a href="#sec-5">&sect;5.1</a>).</li>
+<li>No general-purpose LLM pretraining from scratch; every recipe starts from an open checkpoint (Qwen3 family).</li>
+<li>No replacement of TorchRec for sparse sharding; no DeepSpeed; no pipeline parallelism in v1 (PP=1).</li>
+<li>Reward <em>models</em> (P-Score multi-tower) are trained with tzrec's existing multi-task stack and consumed by RL as a scoring service; their training is not redesigned here.</li>
+<li>No synchronous LLM reasoning on the request path: CoT models serve via nearline/Think-Ahead caching patterns (<a href="#sec-10">&sect;10.5</a>).</li>
+</ul>
+
+<h3 id="sec-1-5">1.5 Reading guide</h3>
+
+<p>Readers new to generative recommendation should start with the landscape (<a href="#sec-2">&sect;2</a>) and the gap analysis (<a href="#sec-3">&sect;3</a>). Reviewers of the architecture should read <a href="#sec-4">&sect;4</a> then the subsystem sections in order (<a href="#sec-5">&sect;5</a>&ndash;<a href="#sec-10">&sect;10</a>). Infrastructure owners can go straight to <a href="#sec-11">&sect;11</a> (framework leverage) and <a href="#sec-14">&sect;14</a>&ndash;<a href="#sec-15">&sect;15</a> (roadmap, dependencies, risks). Configuration and API surfaces are in <a href="#sec-12">&sect;12</a>; evaluation methodology in <a href="#sec-13">&sect;13</a>.</p>
+</section>

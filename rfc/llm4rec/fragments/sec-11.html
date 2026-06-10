@@ -1,0 +1,242 @@
+<section>
+<h2 id="sec-11">11. Distributed training: leveraging PyTorch, Megatron-LM, Transformers, Accelerate, and verl</h2>
+
+<p>This section is the framework-leverage contract for the whole RFC: for each of the five external frameworks (plus TorchRec and the rollout engines) it states exactly what tzrec depends on, what it deliberately does not adopt, and why — with every claim grounded in source inspection of the pinned checkouts (PyTorch <code>release/2.11</code>, megatron-core 0.18.0, transformers, accelerate 1.14.0.dev, verl 0.8.0.dev). It then specifies the two-world integration that joins the TorchRec sparse world and the dense LLM world on one <code>torch.distributed</code> WORLD (<a href="#sec-4">&sect;4</a>), owns decision D8 (dense parallelism backends), and closes with a parallelism selection guide anchored to published MFU numbers. RL-specific verl usage is summarized in one paragraph and elaborated in <a href="#sec-9">&sect;9</a>; export and serving runtimes are in <a href="#sec-10">&sect;10</a>.</p>
+
+<h3 id="sec-11-1">11.1 Verdict table</h3>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>Framework</th><th>What tzrec uses</th><th>What tzrec deliberately does NOT use</th><th>Why</th></tr></thead>
+<tbody>
+<tr>
+<td>PyTorch 2.11 native <a class="cite" href="#ref-pytorch">[pytorch]</a></td>
+<td>FSDP2 (<code>fully_shard</code>), DeviceMesh over the existing WORLD PG, DTensor TP (<code>parallelize_module</code> + <code>loss_parallel</code>), DCP incl. <code>HuggingFaceStorageReader/Writer</code>, regional <code>torch.compile</code></td>
+<td><code>torch.distributed.pipelining</code> (PP); traceable-FSDP2 whole-graph compile</td>
+<td>The foundation: every API needed for the hybrid DMP+FSDP2 design exists and is test-covered in 2.11; PP is documented "alpha" and unneeded at &le;8B.</td>
+</tr>
+<tr>
+<td>TorchRec 1.6 <a class="cite" href="#ref-torchrec">[torchrec]</a></td>
+<td>Everything tzrec already uses: DMP, planner, fused in-backward sparse optimizers, train pipelines, <code>CombinedOptimizer</code> tree</td>
+<td>DMP's default dense DDP wrap over the LLM subtree; 2D <code>DMPCollection</code> parallelism</td>
+<td>The sparse world is unchanged; only the dense remainder handling is re-routed around the LLM (<a href="#sec-11-7">&sect;11.7</a>).</td>
+</tr>
+<tr>
+<td>Megatron-core 0.18 <a class="cite" href="#ref-megatron">[megatron]</a></td>
+<td><code>GPTModel</code>/<code>T5Model</code> + layer specs, <code>parallel_state</code>, mcore DDP + <code>DistributedOptimizer</code> (ZeRO-1), <code>forward_backward_func</code> schedules, <code>dist_checkpointing</code>, MoE/EP stack; mbridge for HF&harr;mcore weights</td>
+<td><code>megatron.training</code> (argparse-driven <code>pretrain()</code> harness), in-tree HF converters, mcore inference engines (no beam search)</td>
+<td>Embeds cleanly as a library on an existing world (verl-proven); the scale-out backend for MoE/EP and ~8B+ (D8); the trainer harness assumes it owns the process.</td>
+</tr>
+<tr>
+<td>Transformers (pin v4.53.x) <a class="cite" href="#ref-transformers">[transformers]</a></td>
+<td>Qwen3 model classes, tokenizer, <code>resize_token_embeddings</code>, <code>from_pretrained</code> meta-init, <code>generate()</code> for eval-time beam search</td>
+<td><code>Trainer</code>; the continuous-batching engine</td>
+<td>Model code is battle-tested and exposes the <code>inputs_embeds</code> injection surface; Trainer brings its own Accelerator, dataloader, and checkpoint assumptions that clash with tzrec's loop.</td>
+</tr>
+<tr>
+<td>Accelerate <a class="cite" href="#ref-accelerate">[accelerate]</a></td>
+<td>Nothing at runtime; the <code>fsdp2_prepare_model</code> layering recipe is <em>ported</em> (~150 lines, with citation)</td>
+<td><code>Accelerator</code>/<code>Accelerator.prepare</code>, <code>PartialState</code>, prepared dataloaders, <code>AcceleratedOptimizer</code></td>
+<td>Its value is bundled behind process-global singletons that assume ownership of PG lifecycle, optimizer step gating, and dataloader sharding — all of which tzrec already owns (<a href="#sec-11-5">&sect;11.5</a>).</td>
+</tr>
+<tr>
+<td>verl 0.8 <a class="cite" href="#ref-verl">[verl]</a></td>
+<td>The whole RL harness as-is: Ray single-controller, GRPO/policy-loss registries, AgentLoop + reward + dataset extension points, FSDP/Megatron engines, checkpoint engines</td>
+<td>Forking or patching verl source; verl's SFT trainer for the main SFT path</td>
+<td>All four tzrec RL requirements land via documented config-level extension surfaces with zero framework patches (D9); verl runs as a separate process tree in its own env (<span class="risk">R-ENV</span>).</td>
+</tr>
+<tr>
+<td>vLLM / SGLang <a class="cite" href="#ref-vllm">[vllm]</a><a class="cite" href="#ref-sglang">[sglang]</a></td>
+<td>vLLM as the pinned RL rollout backend (v1 <code>logits_processors</code> hook, <code>processed_logprobs</code>); optionally vLLM serving for token-only models</td>
+<td>SGLang for SID rollouts; vLLM's emulated beam-search API for constrained decode</td>
+<td>SGLang has no beam search; vLLM's beam API bypasses logits processors — constrained beam runs through the per-step scorer path instead (D11/D12, <a href="#sec-9">&sect;9</a>, <a href="#sec-10">&sect;10</a>).</td>
+</tr>
+</tbody>
+</table>
+<figcaption>Framework leverage verdicts. Pins: PyTorch release/2.11 @ <code>70d99e998b4</code>; megatron-core 0.18.0 @ <code>31fbdf036</code>; transformers main @ <code>c9de1097</code> (v5 line) with v4.53.3 as the deployment pin; accelerate @ <code>29e03d18</code>; verl @ <code>8232babc</code>.</figcaption>
+</figure>
+
+<div class="callout revision">
+<p class="callout-title">Revision vs prior spec &sect;3(f) — FSDP2 becomes the default dense backend</p>
+<p>The prior internal spec made Megatron-core the default dense-world backend with FSDP2 as fallback. This RFC inverts that: <strong>FSDP2 (<code>fully_shard</code>) is the v1 default</strong> and Megatron-core 0.18 is the scale-out backend for MoE/EP and ~8B+ models. Three findings drove the inversion: (a) the DMP+FSDP2 coexistence pattern is explicitly test-covered in PyTorch 2.11 (<a href="#sec-11-2">&sect;11.2</a>), resolving <span class="risk">R-DMP</span> with in-tree machinery; (b) OpenOneRec trained its full released model line on FSDP2 with plain AdamW over DTensor params <a class="cite" href="#ref-openonerec">[openonerec]</a><a class="cite" href="#ref-repo-openonerec">[repo-openonerec]</a>, so the recipe tzrec reproduces first is FSDP2-native; (c) megatron-core HEAD now pins <code>requires-python &gt;= 3.12</code> while the tzrec env is py3.11 — usable via a released wheel pin, but a dependency-surface asymmetry that argues against making it the default. Megatron remains fully specified (<a href="#sec-11-3">&sect;11.3</a>) and is the engine verl uses for large actors, so nothing is lost at the top end.</p>
+</div>
+
+<h3 id="sec-11-2">11.2 PyTorch 2.11 native stack: the foundation</h3>
+
+<h4 id="sec-11-fsdp2">fully_shard API surface</h4>
+
+<p>FSDP2's public API (<code>torch/distributed/fsdp/_fully_shard/_fully_shard.py:90</code>) is small and composes precisely the way the two-world design needs. <code>fully_shard(module_or_list, *, mesh, reshard_after_forward, mp_policy, offload_policy, ignored_params)</code> swaps each managed parameter for a dim-0-sharded DTensor in place — FQNs are unchanged because the class is swapped via MRO injection rather than wrapping. The properties tzrec relies on, all verified in source or tests:</p>
+
+<ul>
+<li><strong>List-form grouping for tied weights.</strong> Shared-parameter bookkeeping only spans a single <code>fully_shard</code> call (<code>_fsdp_param_group.py:845-857</code>), so tied <code>embed_tokens</code>/<code>lm_head</code> (Qwen3-0.6B/1.7B/4B ship <code>tie_word_embeddings: true</code>) must land in one call: <code>fully_shard([embed, lm_head], ...)</code> or be left to the root group. Getting this wrong silently double-shards one logical weight.</li>
+<li><strong>Lazy root detection lets us shard only the LLM subtree.</strong> The first FSDP module to run forward becomes the root (<code>_fsdp_state.py:163-203</code>); there is no requirement that the overall module root is wrapped. The tzrec <code>BaseModel</code>/DMP root stays untouched and only <code>model.llm</code> is sharded. Corollary: never run a wrapped sub-block's forward standalone before the first full forward through the topmost wrapped module, or lazy init raises (<code>_fsdp_state.py:184-189</code>).</li>
+<li><strong>The composability filter does NOT know TorchRec.</strong> <code>_get_managed_modules</code> only refuses to recurse into modules registered with the <code>replicate</code> contract (<code>_fsdp_common.py:101-106</code>); a DMP-sharded table under the wrapped module would be claimed and mis-sharded. Rule: never call <code>fully_shard</code> on an ancestor of TorchRec-sharded modules, or pass their params via <code>ignored_params</code> (covered by <code>test_fully_shard_ignore_params.py</code>).</li>
+<li><strong><code>MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)</code></strong> gives the standard bf16-compute/fp32-reduce recipe while sharded params and optimizer state stay in the original dtype (<code>_fsdp_api.py:14-53</code>).</li>
+<li><strong><code>set_requires_gradient_sync(False)</code></strong> is the gradient-accumulation lever (FSDP1 <code>no_sync</code> equivalent; controls reduce-scatter and all-reduce), needed for RL mini-epoch accumulation; <code>set_reshard_after_forward(False)</code> flips to a rollout/eval-friendly mode at runtime.</li>
+<li><strong><code>register_fsdp_forward_method(llm, "generate")</code></strong> (<code>_fully_shard.py:662</code>): <code>.generate()</code> bypasses module-call hooks, so eval-time generation under sharding requires registering it as an FSDP forward method (or manual <code>unshard()/reshard()</code>). transformers' own Trainer does exactly this after FSDP2 prep.</li>
+<li><strong>No deepcopy.</strong> <code>FSDPModule</code> explicitly forbids deepcopy (<code>_fully_shard.py:234</code>) — RL reference models must be built as a second instance plus state-dict load, never <code>copy.deepcopy(actor)</code>.</li>
+</ul>
+
+<h4 id="sec-11-mesh">DeviceMesh from the existing WORLD</h4>
+
+<p>tzrec already owns <code>dist.init_process_group</code> (<code>tzrec/utils/dist_util.py:57-75</code>). <code>init_device_mesh</code> adopts that PG rather than fighting it: it only calls <code>init_process_group()</code> if none exists (<code>device_mesh.py:427</code>), and for a mesh dim spanning the entire world the dim group <em>is</em> the default PG — the zero-extra-PG fast path at <code>device_mesh.py:511-529</code>. A pure-FSDP run therefore creates no new NCCL communicator: the same WORLD PG that DMP uses backs the FSDP all-gathers, with correctness guaranteed by deterministic program-order issue (same argument as today's DMP+DDP). <code>DeviceMesh.from_group</code> (line 1027) exists for adopting externally created PGs if ever needed. The one structural rule for FSDP+TP: <code>mesh["dp"]</code> and <code>mesh["tp"]</code> must be slices of <em>one</em> root mesh, because FSDP's 2D placement path calls <code>DeviceMesh._concatenate</code> which requires an identical <code>_flatten_rank_map</code> (<code>_fsdp_param.py:299</code>, <code>device_mesh.py:1389</code>) — never build separate dp and tp meshes.</p>
+
+<h4 id="sec-11-tp">Tensor parallelism and loss_parallel</h4>
+
+<p>DTensor TP is applied before sharding: <code>parallelize_module(llm, mesh["tp"], plan)</code> with <code>ColwiseParallel</code>/<code>RowwiseParallel</code>/<code>SequenceParallel</code> styles (<code>tensor/parallel/style.py</code>); Qwen3 even ships a ready <code>base_model_tp_plan</code> in its config. The composition order verified in <code>test_2d_composability.py:179-256</code> is: one global 2D mesh, then TP, then bottom-up <code>fully_shard</code> on <code>mesh["dp"]</code>. <code>loss_parallel()</code> (<code>tensor/parallel/loss.py:31</code>) computes cross-entropy directly on vocab-sharded logits (Colwise lm_head with <code>use_local_output=False</code>) — the memory lever for the 176,384-row head (<a href="#sec-7">&sect;7</a>), avoiding an all-gather of <code>[tokens, 176K]</code> logits; note label smoothing is unsupported inside the context, and backward must run inside it too.</p>
+
+<h4 id="sec-11-dcp">DCP: one checkpoint for both worlds</h4>
+
+<p>DCP's planner treats plain Tensor, DTensor, and ShardedTensor uniformly (<code>planner_helpers.py:380-432</code>), so a single state dict mixing TorchRec ShardedTensor tables and FSDP2 DTensor params saves and loads correctly — this is verified planner behavior, not an assumption, and tzrec's <code>checkpoint_util.py:27-35</code> already builds on these APIs. The dense optimizer joins via <code>get_optimizer_state_dict(llm, dense_optim)</code>, which converts param ids to canonical FQNs and yields reshardable DTensor state. Two HF-format bridges matter operationally: <code>HuggingFaceStorageReader</code> (<code>hf_storage.py:202</code>) loads a sharded-safetensors Qwen3 checkpoint straight into sharded DTensor params, each rank reading only its slice ranges; <code>HuggingFaceStorageWriter(save_distributed=True, enable_consolidation=True)</code> exports a tzrec-trained dense tree back to consolidated HF safetensors plus index — the artifact vLLM and verl consume. <code>async_save</code> exists (stage-to-CPU then background write) and matches tzrec's async-I/O preference, with the usual caveats: all ranks must pass identical keys on load (mismatch hangs), and <code>StateDictOptions(broadcast_from_rank0=True)</code> is DTensor-only — usable for the dense tree, not for TorchRec tables.</p>
+
+<h4 id="sec-11-ddp">DDP/DMP composability — resolving R-DMP</h4>
+
+<p>The exact hybrid pattern tzrec needs is an in-tree test: <code>test_fully_shard_ignore_params.py::test_ddp_A_fsdp_B_ddp_C</code> (line 232) builds one model on one default PG, applies <code>fully_shard</code> to an inner subtree, then registers the FSDP param FQNs via <code>DDP._set_params_and_buffers_to_ignore_for_model</code> before DDP-wrapping the rest, and steps optimizers under <code>implicit_replication()</code> (which lets ops mix DTensor and plain tensors). TorchRec's DMP dense wrapping uses the same <code>_ddp_params_and_buffers_to_ignore</code> mechanism inside its <code>DefaultDataParallelWrapper</code>, and DMP's <code>data_parallel_wrapper</code> is pluggable with <code>init_data_parallel=False</code> available for ordering control — tzrec's own DMP wrapper already forwards it (<code>dist_util.py:172</code>). This closes <span class="risk">R-DMP</span>: the coexistence is not a bespoke hack but the composition the upstream test suite pins.</p>
+
+<h4 id="sec-11-compile">Pipelining and torch.compile status</h4>
+
+<p><code>torch.distributed.pipelining</code> ships full schedules but its docs state "currently in alpha state and under development"; with &le;8B dense models and ZeRO-style sharding available, PP is out of scope for v1 (see also the tied-embedding complications it creates on the Megatron side, <a href="#sec-11-3">&sect;11.3</a>). For compile: <code>torch._dynamo.config.skip_fsdp_hooks = True</code> is the default, so compiling a wrapped module graph-breaks at FSDP boundaries; the supported pattern is <strong>regional compile</strong> — <code>torch.compile</code> each transformer block, comms stay eager (the torchtitan recipe). Helpfully, <code>skip_torchrec = True</code> means dynamo will not trace TorchRec internals, keeping compiled dense regions clean. DeviceMesh slicing under compile is unverified upstream — slice meshes at setup time, never inside compiled code.</p>
+
+<h3 id="sec-11-3">11.3 Megatron-core 0.18 as an embeddable library</h3>
+
+<p>megatron-core is usable as a pure library: no <code>megatron.training</code>, no argparse globals, no process ownership. <code>initialize_model_parallel(...)</code> <strong>asserts</strong> <code>torch.distributed.is_initialized()</code> (<code>parallel_state.py:728</code>) and never calls <code>init_process_group</code>; it only carves TP/PP/CP/EP/DP subgroups out of the existing WORLD via <code>new_group</code>. This is exactly how verl drives it inside Ray workers (<code>verl/workers/engine/megatron/transformer_impl.py:148-159</code>), so the embedding pattern is production-proven. New in 0.18, <code>rank_offset</code>/<code>local_world_size</code> can build the Megatron layout over a <em>subset</em> of the world, leaving other ranks for sparse-only or rollout roles. An mpu-free path exists — <code>ProcessGroupCollection</code> is accepted by <code>GPTModel</code>, DDP, the optimizer, schedules, and <code>finalize_model_grads</code> — but it is not airtight: the unfused <code>vocab_parallel_cross_entropy</code> still reads the global TP group (<code>cross_entropy.py:130-158</code>), and helper fallbacks substitute mpu globals once initialized. The pragmatic call: <strong>initialize mpu globally on the existing WORLD, start at tp=pp=1</strong> (all subgroups trivially sized, so the "mcore island" is cheap), and treat <code>pg_collection</code> as an optional explicitness layer rather than the mechanism.</p>
+
+<h4 id="sec-11-gptmodel">GPTModel and the Qwen3 mapping</h4>
+
+<p><code>GPTModel(config, transformer_layer_spec, vocab_size, max_sequence_length, position_embedding_type='rope', rotary_base=1e6, share_embeddings_and_output_weights=..., ...)</code> (<code>gpt_model.py:86-109</code>) covers Qwen3 dense with <em>stock</em> fields — no custom modules: <code>num_query_groups</code> = HF <code>num_key_value_heads</code>, <code>kv_channels</code> = HF <code>head_dim</code> (128, decoupled from hidden/heads), <code>qk_layernorm=True</code> (the per-head q/k RMSNorm that is Qwen3's signature), <code>gated_linear_unit=True</code> with SiLU, RMSNorm, no biases. This mapping is cross-checked against verl's converter (<code>config_converter.py:167-184</code>). The padded model vocab 176,384 = 2&#x2078;&times;689 (<a href="#sec-7">&sect;7</a>) divides evenly for TP &isin; {1,2,4,8,&hellip;}, and both mbridge and Megatron-Bridge build <code>GPTModel(vocab_size=176384)</code> with <em>no extra padding</em>, so Megatron-side and HF-side shapes match exactly — the <code>ceil(v/(128&middot;tp))</code> formula is a megatron.training script convention tzrec never enters <a class="cite" href="#ref-mbridge">[mbridge]</a><a class="cite" href="#ref-megatron-bridge">[megatron-bridge]</a>. <code>T5Model</code> exists with the same library shape for the OneRec V1 encoder&ndash;decoder topology <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a>; at PP=1 its legacy encoder/decoder placement scheme is moot.</p>
+
+<h4 id="sec-11-mcore-loop">The minimal external loop and its mandatory wiring</h4>
+
+<p>The canonical embedded loop is the QuickStart skeleton plus the DDP/optimizer wiring that <code>megatron/training</code> normally does (<code>training.py:2879-2897</code>):</p>
+
+<pre><code># build (once): mpu init on existing world; model_parallel_cuda_manual_seed(seed)
+model = DDP(config, ddp_config, GPTModel(...))           # mcore DDP: flat grad buffers, param.main_grad
+optimizer = get_megatron_optimizer(opt_cfg, [model])     # DistributedOptimizer = ZeRO-1
+config.grad_scale_func          = optimizer.scale_loss   # fp16 only
+config.no_sync_func             = model.no_sync          # when overlap_grad_reduce
+config.finalize_model_grads_func = finalize_model_grads  # MANDATORY: else grads never reduce
+
+# per step:
+model.zero_grad_buffer(); optimizer.zero_grad()
+losses = forward_backward_func(forward_step_func=fwd_step, data_iterator=it, model=model,
+                               num_microbatches=k, seq_length=S, micro_batch_size=b)
+ok, grad_norm, _ = optimizer.step()
+</code></pre>
+
+<p>The <code>forward_step_func</code> contract (<code>schedules.py:63-94</code>) — return <code>(output_tensor, partial(loss_func, loss_mask))</code>, where <code>loss_func</code> can return <code>(loss_sum, num_tokens, report)</code> for per-token normalization — consumes any iterator, so tzrec's dataset pipeline plugs in without Megatron dataset code. <code>DistributedOptimizer</code> is ZeRO-1: optimizer state and fp32 master params are sharded across DP over flat grad-buffer ranges, grads reduce-scatter, params all-gather after step. <code>finalize_model_grads</code> (<code>finalize_model_grads.py:438-543</code>) is the per-step synchronization point whose ordering matters for D7: DP reduce-scatter, layernorm/non-TP allreduce over TP, tied word-embedding grad allreduce over the embd group, then per-token scaling. Stage-1 itemic-row freezing must zero <code>param.main_grad</code> rows <em>after</em> this function and <em>before</em> <code>optimizer.step()</code>, with a <code>wd_mult=0.0</code> param-group override — the OpenOneRec restore-after-step trick is broken under DistributedOptimizer because the fp32 master shard drifts and overwrites restored rows every step; full mechanics and recipe in <a href="#sec-8">&sect;8</a> (D7).</p>
+
+<h4 id="sec-11-mcore-ckpt">dist_checkpointing, packed sequences, MoE, and the gotchas</h4>
+
+<p><code>dist_checkpointing.save/load</code> is TP/PP/DP-<em>reshardable</em> (save at tp=4, load at tp=8) over a DCP-based <code>torch_dist</code> backend, with <code>allow_shape_mismatch=True</code> on embedding weights tolerating vocab-padding differences — the Megatron-mode dense checkpoint lives as a sibling directory in the tzrec checkpoint layout (<a href="#sec-11-7">&sect;11.7</a>). Packed THD sequences (<code>PackedSeqParams</code> with <code>cu_seqlens</code>) flow into TE's varlen attention, but the <strong>local (non-TE) spec hard-asserts <code>packed_seq_params is None</code></strong> (<code>dot_product_attention.py:153</code>) — 32K sample packing (D6) on the Megatron backend requires the TE layer spec, mirroring the FA-only packing rule on the HF side (<a href="#sec-8">&sect;8</a>). The MoE surface is config-only and covers the OneRec-style recipe: <code>num_moe_experts</code>, <code>moe_router_topk</code>, <code>moe_grouped_gemm</code>, <code>moe_token_dispatcher_type='alltoall'</code>, DeepSeek-V3 aux-loss-free expert-bias balancing <a class="cite" href="#ref-dsv3">[dsv3]</a>; EP&gt;1 with TP&gt;1 requires <code>sequence_parallel=True</code>. Three operational gotchas: (1) megatron-core HEAD requires Python &ge;3.12 — tzrec pins a released megatron-core wheel rather than tracking HEAD; (2) <code>model_parallel_cuda_manual_seed</code> must run before model build for TP-correct init; (3) the inference engines have <strong>no beam search</strong> — the REST server rejects it outright (<code>text_generation_server.py:46-47</code>) — so SID beam decode never runs inside mcore; it stays in the host-side beam driver over an exported single-step scorer (D13, <a href="#sec-10">&sect;10</a>) or in vLLM via verl (D11, <a href="#sec-9">&sect;9</a>).</p>
+
+<h3 id="sec-11-4">11.4 Transformers: model classes yes, Trainer no</h3>
+
+<p>tzrec depends on transformers for exactly four things: (1) the Qwen3 model classes — GQA with per-head-dim q/k RMSNorm, the strict <code>input_ids</code> XOR <code>inputs_embeds</code> forward (the context-embedding injection surface of <a href="#sec-7">&sect;7</a>), and the <code>FlashAttentionKwargs</code> conduit that carries packed-sequence <code>cu_seq_lens</code> untouched into the kernel; (2) the tokenizer plus <code>resize_token_embeddings(mean_resizing=True)</code> for itemic vocab expansion — with the 267-stale-row re-init correction (<span class="risk">R-VOCAB-INIT</span>, <a href="#sec-7">&sect;7</a>); (3) <code>from_pretrained</code> sharded-safetensors loading with meta-device init; (4) <code>generate()</code> for offline eval — the v5-refactored beam search is fully vectorized with static shapes, applies logits processors to log-softmax scores (so a trie's <code>-inf</code> mask composes with beam scores), and auto-enables <code>synced_gpus</code> under FSDP so sharded eval generation does not deadlock.</p>
+
+<p>tzrec deliberately does <strong>not</strong> adopt <code>Trainer</code>. Trainer always constructs its own <code>Accelerator</code> internally (<code>create_accelerator_and_postprocess</code>, <code>trainer.py:752-861</code>), bringing the exact singleton conflicts of <a href="#sec-11-5">&sect;11.5</a>, plus its own dataloader and checkpoint formats. One Trainer behavior must be <em>replicated</em> in the tzrec loop, though: gradient-accumulation loss normalization. Trainer prefetches all accumulation micro-batches and counts <code>labels.ne(-100).sum()</code> across them (<code>num_items_in_batch</code>, <code>trainer.py:2095-2140</code>), normalizing the summed CE by total non-masked tokens — the "GA loss bug" fix. With response-masked CE and packing (D6), naive per-micro-batch mean loss biases gradients toward short-response micro-batches; tzrec's SFT loop adopts the same total-token normalization (and on the Megatron side, <code>calculate_per_token_loss</code> with the 3-tuple <code>loss_func</code> return achieves the equivalent).</p>
+
+<p><strong>Version pin.</strong> tzrec pins the v4.53 line now (the OpenOneRec-verified line, and the line the export experiment of <a href="#sec-10">&sect;10</a> was proven on) and records the v5 migration deltas as a checklist rather than chasing main: <code>torch_dtype</code> &rarr; <code>dtype</code> with the default flipping from fp32 to checkpoint-sniffed "auto"; <code>rope_theta</code>/<code>rope_scaling</code> &rarr; unified <code>rope_parameters</code>; <code>_tied_weights_keys</code> list &rarr; dict; meta-init always on (<code>low_cpu_mem_usage</code> dropped); and group-beam/constrained-beam generation modes moved out to Hub <code>custom_generate</code> repos requiring <code>trust_remote_code</code> — another reason the production constrained decode path does not depend on HF generation modes (D12).</p>
+
+<h3 id="sec-11-5">11.5 Accelerate: port the recipe, never call prepare</h3>
+
+<p>The verdict is categorical: <strong>tzrec never constructs an <code>Accelerator</code> or calls <code>Accelerator.prepare</code> inside its training path.</strong> The reasons are specific and verified, not stylistic:</p>
+
+<ul>
+<li><strong>PG lifecycle ownership.</strong> <code>PartialState</code> does adopt an already-initialized PG (a correction to the prior spec's wording), but the conflict is lifecycle and policy: <code>Accelerator.end_training()</code> destroys the <em>default</em> PG (<code>accelerator.py:3402</code>, <code>state.py:848-856</code>) that DMP still uses; PG kwargs such as tzrec's <code>PROCESS_GROUP_TIMEOUT_SECONDS</code> apply only when accelerate creates the PG; and all three state objects are process-global singletons.</li>
+<li><strong>Optimizer dummy-swap machinery cannot round-trip TorchRec.</strong> <code>_prepare_fsdp2</code> requires model+optimizer in one call, swaps every <code>param_group</code> entry to <code>torch.empty(1)</code> dummies and re-points them at sharded DTensors by <code>data_ptr</code> mapping, raising <code>KeyError</code> on any miss (<code>accelerator.py:1714-1726</code>, <code>fsdp_utils.py:563-591</code>). TorchRec fused embedding params live in DMP-sharded modules, are excluded from the dense optimizer by <code>in_backward_optimizer_filter</code>, and are invisible to accelerate's parallel-model extraction — the hybrid model cannot pass through. <code>AcceleratedOptimizer</code> additionally gates <code>step()</code> on accelerate-owned <code>GradientState</code> that tzrec's <code>TrainPipelineSparseDist</code> does not drive.</li>
+<li><strong>Forward monkeypatching breaks tzrec machinery.</strong> Under native AMP, <code>prepare_model</code> rebinds <code>model.forward</code> via <code>MethodType</code> (<code>accelerator.py:1818-1829</code>) — incompatible with TorchRec train-pipeline forward rewriting and the torch.export paths tzrec's export relies on.</li>
+<li><strong>Dataloader rewrap is wrong for tzrec datasets.</strong> Prepared IterableDatasets become <code>DataLoaderDispatcher</code> (rank-0 iterates and broadcasts — catastrophic for throughput) or <code>IterableDatasetShard</code> (re-shards round-robin on top of tzrec's already rank-sharded ODPS/Parquet readers, duplicating or dropping data).</li>
+<li><strong><code>ParallelismConfig</code> cannot express the hybrid mesh.</strong> Validation enforces <code>total_size == num_processes</code> (<code>parallelism_config.py:372-377</code>); there is no vocabulary for "dense FSDP mesh plus TorchRec model-parallel embedding world on the same ranks".</li>
+</ul>
+
+<p>What accelerate <em>does</em> contribute is the best-curated FSDP2 layering recipe in the ecosystem, and it is nearly free of the singletons: tzrec ports <code>fsdp2_prepare_model</code> / <code>_prepare_fsdp2</code> (~150 lines, <code>fsdp_utils.py:645-807</code>, with an in-code citation per tzrec convention) into the <code>Fsdp2Parallelizer</code>. The load-bearing details of the port: apply activation checkpointing (<code>checkpoint_wrapper</code>, <code>preserve_rng_state=False</code>) at the same boundary as the wrap policy <em>before</em> sharding; regional compile before sharding; <code>fully_shard</code> children bottom-up; give an untied input embedding its own unit; shard the tail group <code>[final_norm, lm_head]</code> together with <code>reshard_after_forward=False</code> (its end-of-forward re-gather cannot be overlapped); root <code>fully_shard</code> last with the default reshard heuristic; fp32 master-weight upcast under mixed precision; meta-device materialization with rank-0 full-state-dict broadcast load (<code>fsdp2_load_full_state_dict</code>), re-registering non-persistent buffers and re-tying weights after load. One simplification falls out for free: because tzrec controls ordering, it creates the dense optimizer <em>after</em> sharding, sidestepping accelerate's entire dummy-param swap dance. Direct accelerate use remains acceptable in exactly one place: a TorchRec-free pure-LLM entrypoint (e.g. a standalone text-only SFT utility), provided it never calls <code>end_training()</code> while tzrec components share the process — and even there the ported recipe makes it largely redundant.</p>
+
+<h3 id="sec-11-6">11.6 verl: the RL harness, used as-is</h3>
+
+<p>verl 0.8 is adopted wholesale as the RL stage's orchestrator and is detailed in <a href="#sec-9">&sect;9</a> (D9&ndash;D11); here only the framework-leverage summary. All four tzrec requirements — custom rec dataset, trie-constrained rollout, composable rewards, Megatron-backed actors — land through documented extension surfaces with <strong>zero verl source patches</strong>: <code>data.custom_cls</code> dataset plug-in, a custom AgentLoop registered via <code>rollout.agent.agent_loop_config_path</code> YAML, the engine-level vLLM v1 logits-processor injection via <code>engine_kwargs.vllm.logits_processors</code>, <code>reward.custom_reward_function</code>, and the policy-loss/advantage registries for ECPO/GBPO plugins (D10). verl runs as a separate process tree with a parquet/HF-checkpoint handoff, in its own conda env — its ray/vllm dependency set conflicts with tzrec's <code>grpcio-tools&lt;1.63</code>/protobuf-4.x pin, which is <span class="risk">R-ENV</span>, mitigated by env isolation rather than pin negotiation. The Megatron engine mandates mbridge (<code>assert engine_config.use_mbridge</code>) and consumes the SID-expanded HF checkpoint directly, including the 176,384-row embedding (<a href="#sec-11-3">&sect;11.3</a>). Candidate upstream contributions from this work: the CSR-trie constrained-beam logits processor and server glue (the gap verl itself has — constrained <em>beam</em> rollout — is the one feature absent in-tree), and the SID agent loop as a reference recipe.</p>
+
+<h3 id="sec-11-7">11.7 Two-world integration: DenseParallelizer backends</h3>
+
+<div class="callout decision">
+<p class="callout-title">Decision D8 — dense parallelism: Fsdp2Parallelizer default, MegatronParallelizer for scale-out</p>
+<p>The dense LLM subtree is parallelized by a pluggable <code>DenseParallelizer</code> in <code>tzrec/distributed/</code>, invoked after model build and <em>before</em> DMP construction (the seam at <code>tzrec/main.py:686</code>). <strong>Default = <code>Fsdp2Parallelizer</code></strong>: build one DeviceMesh from the existing WORLD PG; <code>fully_shard</code> ONLY the LLM subtree using the accelerate-ported layering recipe (<a href="#sec-11-5">&sect;11.5</a>); register the FSDP param FQNs in TorchRec's dense DDP ignore list (pluggable <code>data_parallel_wrapper</code> / <code>init_data_parallel=False</code>); create the dense optimizer AFTER sharding. <strong>Scale-out = <code>MegatronParallelizer</code></strong> (MoE/EP, ~8B+, and the verl megatron engine): <code>initialize_model_parallel</code> on the existing WORLD, HF&rarr;mcore via mbridge, mcore DDP + DistributedOptimizer, PP=1 in v1. Never call accelerate's <code>Accelerator.prepare</code> — the recipe is ported, not invoked. The prior spec's Megatron-default ordering is reversed (see Revision callout, <a href="#sec-11-1">&sect;11.1</a>).</p>
+</div>
+
+<pre class="diagram">
+                ONE torch.distributed WORLD (nccl), device = LOCAL_RANK
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │  sparse world (TorchRec DMP)                dense world (LLM subtree)      │
+ │  ─────────────────────────────              ──────────────────────────     │
+ │  EmbeddingCollection tables                 Fsdp2Parallelizer (default):   │
+ │  row_wise over WORLD, dynamicemb            mesh = init_device_mesh(world) │
+ │  fused in-backward optimizer                fully_shard(blocks, llm)       │
+ │  (apply_optimizer_in_backward)              DTensor params, bf16/fp32 MP   │
+ │          │ lookups                                  ▲                      │
+ │          ▼                                          │ DDP-ignore FSDP FQNs │
+ │  context embeddings ──── inputs_embeds / ───────────┘                      │
+ │  (KJT → JT → project)    mcore decoder_input  [R-INJECT, §7]               │
+ │                                                                            │
+ │  MegatronParallelizer (scale-out): mpu subgroups on same WORLD;            │
+ │  DMP( McoreDDP( Float16Module( model ) ) ); GradScale ×tp; finalize hook   │
+ │                                                                            │
+ │  optimizers: CombinedOptimizer([fused_sparse, dense_llm, part_optims])     │
+ │  checkpoint: ONE DCP dict {model: ShardedTensor+DTensor, sparse_optim,     │
+ │              dense_optim}  (Megatron mode: sibling dist_checkpointing dir) │
+ └────────────────────────────────────────────────────────────────────────────┘
+</pre>
+
+<h4 id="sec-11-init-order">Initialization order</h4>
+
+<p>The order is rigid and extends tzrec's existing sequence (<code>train_and_evaluate</code>, <code>tzrec/main.py:543-788</code>): (1) <code>dist.init_process_group</code> + <code>torch.cuda.set_device</code> (unchanged, <code>dist_util.py:57-75</code>); (2) DenseParallelizer pre-init — DeviceMesh creation (FSDP2 mode) or <code>initialize_model_parallel</code> + <code>model_parallel_cuda_manual_seed</code> (Megatron mode); (3) model build, with the dense backbone on meta device; (4) dense parallelization + HF weight load (DCP <code>HuggingFaceStorageReader</code> or mbridge); (5) <code>apply_optimizer_in_backward</code> on sparse params (must precede planning, unchanged); (6) planner + DMP with the LLM params excluded from dense DDP wrapping; (7) optimizer tree assembly; (8) checkpoint restore. Keeping tzrec's <code>set_device</code> first matters: <code>init_device_mesh</code> would otherwise set the device itself from <code>LOCAL_RANK</code>.</p>
+
+<h4 id="sec-11-fsdp2-pattern">FSDP2-native pattern (default)</h4>
+
+<p>In FSDP2 mode the train step shape is unchanged from today's tzrec: one backward populates both worlds' gradients; the sparse fused optimizer has already applied its updates in-backward by the time <code>TZRecOptimizer.step()</code> runs the dense AdamW over DTensor params. The dense optimizer joins tzrec's existing tree — <code>CombinedOptimizer([fused_sparse, dense, *part])</code> (<code>main.py:693-755</code>) — through the <code>in_backward_optimizer_filter</code> split plus the <code>part_optimizers</code> regex seam (<code>optimizer_builder.py:219-237</code>), which is precisely the "LLM params get AdamW + cosine, rec params keep Adagrad" mechanism; grad-norm math over mixed DTensor/plain params runs under <code>implicit_replication()</code>. Sequencing risk <span class="risk">R-GRAD</span> is mostly about accumulation asymmetry: in-backward sparse updates fire on <em>every</em> backward while <code>set_requires_gradient_sync(False)</code> defers only dense reduction — accumulated-step recipes must either scale sparse LR accordingly or keep sparse tables out of accumulated phases; the RFC default is accumulation=1 for joint phases.</p>
+
+<h4 id="sec-11-mcore-pattern">Megatron pattern (recsys-examples-proven)</h4>
+
+<p>The Megatron backend follows NVIDIA recsys-examples' integration, which has trained HSTU and SID-GR models on exactly this stack <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>. Wrapper order is <code>DistributedModelParallel( McoreDDP( Float16Module( model ) ) )</code> — DMP outermost, mcore DDP excluding TorchRec table shards from its DP broadcast (<code>sharding.py:62-146</code>). The DMP&harr;TP impedance mismatch (DMP treats every rank, including TP peers, as an embedding shard; TP needs all TP ranks on the same batch) is resolved at the activation level: each TP rank looks up its own micro-batch, then jagged-allgathers embeddings over the TP group with a custom <code>GradScale</code> autograd op multiplying gradients by <code>tp_size</code> — undoing TorchRec's division by <code>world = tp&times;dp</code> when only the <code>dp</code> division is wanted — followed by <code>dmp_batch_to_tp</code> allgathering labels (<code>dmp_to_tp.py:15-68</code>, <code>ranking_gr.py:118-120</code>). DP-sharded tables instead get a TP-group allreduce in a custom <code>finalize_model_grads</code> pre-hook before the stock mcore finalize. The step sequence — <code>zero_grad_buffer(); optimizer.zero_grad()</code>; forward; <code>(loss &times; dp_size / global_tokens).backward()</code>; <code>finalize_model_grads</code>; dense <code>optimizer.step()</code> — cannot be expressed inside <code>TrainPipelineSparseDist.progress</code>, so the Megatron backend ships its own pipeline class returned from tzrec's single pipeline-selection seam, <code>create_train_pipeline</code> (<code>dist_util.py:335</code>), mirroring recsys-examples' <code>JaggedMegatronTrainPipelineSparseDist</code>. Known limitation inherited from this stack: no unified gradient clipping across worlds (the sparse update happens inside backward; dynamicemb tracks "decouple backward from optimizer update" as future work).</p>
+
+<h4 id="sec-11-planner">Planner accounting and the unified checkpoint</h4>
+
+<p><span class="risk">R-PLANNER</span>: TorchRec's planner budgets HBM for embedding shards only — <code>HeuristicalStorageReservation(percentage=0.15)</code> is the sole headroom for the LLM's parameters, gradients, optimizer state, and activations, and the precedent is real (a large pooled table planned table-wise onto rank 0 OOM'd a V100 because the planner ignored dense activations; fixed by a global row_wise constraint). Mitigation is twofold: the DenseParallelizer computes its per-rank dense budget (sharded params + grads + optimizer shards + an activation estimate from micro-batch &times; seq len &times; hidden) and raises the reservation via <code>STORAGE_RESERVE_PERCENT</code> — surfaced as the planner env knob <code>TZREC_DP_DENSE_RESERVE_PERCENT</code> per tzrec's env-naming convention, read at the call site; and generative configs default to a global row_wise sharding constraint so no single rank concentrates table storage. Checkpointing stays a single tzrec checkpoint: the FSDP2 mode extends the existing DCP dict — <code>{"model": ..., "sparse_optim": ..., "dense_optim": get_optimizer_state_dict(llm, dense_optim)}</code> — relying on DCP's verified mixed ShardedTensor+DTensor handling (<a href="#sec-11-2">&sect;11.2</a>); the Megatron mode attaches a <code>dist_checkpointing</code> subdirectory beside <code>model/</code> and <code>optimizer/</code> at the single write site <code>save_model</code> (<code>checkpoint_util.py:873</code>), the same side-by-side pattern dynamicemb already uses. HF-format export for rollout/serving handoff goes through <code>HuggingFaceStorageWriter</code> (FSDP2) or the mbridge exporter (Megatron).</p>
+
+<h3 id="sec-11-8">11.8 Parallelism selection guide</h3>
+
+<figure class="table-wrap">
+<table class="data">
+<thead><tr><th>Model size &times; backbone</th><th>Recipe</th><th>Notes / anchors</th></tr></thead>
+<tbody>
+<tr>
+<td>0.1&ndash;1B in-house (LazyDecoderGRBackbone, EncoderDecoderGRBackbone, InhouseHstuGRBackbone)</td>
+<td>Pure DP: DDP or FSDP2-as-DDP (<code>reshard_after_forward=False</code>) + TorchRec sparse over WORLD; bf16 autocast; optional ZeRO-1-style sharded optimizer states</td>
+<td>OneRec V1 trained 0.9&ndash;2.6B with DP + ZeRO-1 + grad accumulation only — dense params fit on one GPU <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a>; V2's lazy decoder cuts activations ~14&times; further <a class="cite" href="#ref-onerec-v2">[onerec-v2]</a>. Model parallelism buys nothing here.</td>
+</tr>
+<tr>
+<td>1&ndash;8B Qwen3 (Qwen3GRBackbone)</td>
+<td>FSDP2 on a 1D world mesh; regional compile; activation checkpointing; <strong>+TP at 8B</strong> (2D mesh, <code>loss_parallel</code> for the 176K-vocab head)</td>
+<td>OpenOneRec-proven recipe at 0.6&ndash;14B <a class="cite" href="#ref-openonerec">[openonerec]</a>. TP only when memory-bound: recsys-examples measured TP=2 dropping HSTU MFU 22.96%&rarr;16.81% — comm cost is real <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>.</td>
+</tr>
+<tr>
+<td>8B+ dense / any MoE</td>
+<td>MegatronParallelizer: TP (&times;EP for MoE) via mbridge, mcore DDP + DistributedOptimizer, <code>sequence_parallel</code> when TP&gt;1 with EP&gt;1; PP=1</td>
+<td>The verl megatron engine is the same stack, so the RL stage inherits the layout (e.g. Qwen3-30B-A3B GRPO reference run at TP4/EP2) <a class="cite" href="#ref-verl">[verl]</a>.</td>
+</tr>
+<tr>
+<td>Long context (32K packed SFT)</td>
+<td>Sample packing FIRST (cu_seqlens varlen FA on HF; THD + TE spec on Megatron); context parallelism LATER if ever needed</td>
+<td>Packing removes pad waste at zero parallelism cost (D6, <a href="#sec-8">&sect;8</a>); SID-rec sequences rarely justify CP, and CP requires the TE spec path.</td>
+</tr>
+<tr>
+<td>Pipeline parallelism</td>
+<td><strong>Not in v1</strong></td>
+<td>torch pipelining is alpha; mcore PP with tied embeddings forces duplicate-copy grad allreduces and explicit E/L layout strings (<a href="#sec-11-3">&sect;11.3</a>); &le;8B + ZeRO-1/FSDP makes it unnecessary.</td>
+</tr>
+</tbody>
+</table>
+<figcaption>Parallelism recipes by model size and backbone (backbones defined in <a href="#sec-7">&sect;7</a>, D5).</figcaption>
+</figure>
+
+<p>Efficiency anchors for capacity planning, from the published systems rather than projections: OneRec V1 reports <strong>23.7% training MFU</strong> on a 720-GPU DP+ZeRO-1 deployment and <strong>28.8% inference MFU</strong> on its L20/TensorRT serving stack — versus 4.6%/11.2% for the legacy cascade ranking stack — establishing what a well-engineered generative recommender achieves without model parallelism <a class="cite" href="#ref-onerec-v1">[onerec-v1]</a>. OneRec V2's lazy decoder then cut total training computation ~94% and real training resources ~90% at matched quality, and serves at <strong>62% inference MFU</strong> (1B model, beam 512, 36 ms on L20) — evidence that architecture-level compute allocation dominates parallelism-level tuning at this scale <a class="cite" href="#ref-onerec-v2">[onerec-v2]</a>. recsys-examples' HSTU benchmark gives the realistic optimization trajectory for the two-world stack itself: 6.38% baseline MFU &rarr; 9.73% with Karmarkar&ndash;Karp jagged-batch balancing (1.53&times;) &rarr; 22.96% with CUTLASS attention; and the TP=2 regression above <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>. PLUM contributes the throughput heuristics tzrec adopts as training-loop defaults for the dense world: maximize batch size into HBM (halving batch required more than 2&times; the steps for equal quality), constant LR scaled inversely with model size for never-ending production training, and iso-FLOPS curves showing the eval-loss frontier shifts to larger models sooner than train loss — favoring larger dense models for next-day generalization at a fixed budget <a class="cite" href="#ref-plum">[plum]</a>.</p>
+
+</section>
