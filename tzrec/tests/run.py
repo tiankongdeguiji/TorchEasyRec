@@ -17,8 +17,23 @@ import sys
 import time
 import unittest
 import warnings
-from unittest.runner import TextTestRunner
+from unittest.runner import TextTestResult, TextTestRunner
 from unittest.signals import registerResult
+
+# --- TEMP CI-TIMING INSTRUMENTATION (branch ci-timing-probe, do not merge) ---
+_TIMING_OUT = os.environ.get("TZREC_TIMING_OUT", "test_durations.tsv")
+_DURATIONS = []  # list of (duration_seconds, test_id, kind)
+_TIMING_FH = open(_TIMING_OUT, "w", buffering=1)
+_TIMING_FH.write("duration_s\tkind\ttest_id\n")
+
+
+def _record_timing(duration, test_id, kind):
+    _DURATIONS.append((duration, test_id, kind))
+    _TIMING_FH.write(f"{duration:.3f}\t{kind}\t{test_id}\n")
+    _TIMING_FH.flush()
+
+
+# --- END INSTRUMENTATION ---
 
 SUBPROC_TEST_PATTERN = [
     ".dataset_test.",
@@ -114,8 +129,23 @@ def _error_info_of_subproc_result(result):
     return error_info
 
 
+class _TimingTextResult(TextTestResult):
+    """TextTestResult that records per-test wall time (setUp+method+tearDown)."""
+
+    def startTest(self, test):
+        self._t0 = time.perf_counter()
+        super().startTest(test)
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        dur = time.perf_counter() - getattr(self, "_t0", time.perf_counter())
+        _record_timing(dur, str(test.id()), "main")
+
+
 class TZRecTestRunner(TextTestRunner):
     """Test Runner for TorchEasyRec."""
+
+    resultclass = _TimingTextResult
 
     def _makeResult(self):
         return self.resultclass(self.stream, self.descriptions, self.verbosity)
@@ -153,6 +183,7 @@ class TZRecTestRunner(TextTestRunner):
                     for one_subp_test in subp_test_group:
                         subp_test_module = f"tzrec.{one_subp_test.__module__}"
                         subp_test_name = f"{one_subp_test.__class__.__name__}.{one_subp_test._testMethodName}"  # NOQA
+                        _sub_t0 = time.perf_counter()
                         try:
                             run_env = {}
                             if hasattr(one_subp_test, "_run_env"):
@@ -178,6 +209,11 @@ class TZRecTestRunner(TextTestRunner):
                         except subprocess.TimeoutExpired:
                             result.failures.append((one_subp_test, "timeout"))
                             self.stream.write("F")
+                        _record_timing(
+                            time.perf_counter() - _sub_t0,
+                            f"{subp_test_module}.{subp_test_name}",
+                            "subproc",
+                        )
                         self.stream.flush()
             finally:
                 stopTestRun = getattr(result, "stopTestRun", None)
@@ -226,6 +262,21 @@ class TZRecTestRunner(TextTestRunner):
             self.stream.writeln(" (%s)" % (", ".join(infos),))
         else:
             self.stream.write("\n")
+        self.stream.flush()
+
+        # --- dump per-test timings sorted slowest-first ---
+        sorted_out = _TIMING_OUT + ".sorted"
+        with open(sorted_out, "w") as f:
+            f.write("duration_s\tkind\ttest_id\n")
+            for dur, tid, kind in sorted(_DURATIONS, reverse=True):
+                f.write(f"{dur:.3f}\t{kind}\t{tid}\n")
+        total = sum(d for d, _, _ in _DURATIONS)
+        self.stream.writeln(
+            f"[timing] {len(_DURATIONS)} tests, sum={total:.1f}s, "
+            f"top20 below; full list -> {sorted_out}"
+        )
+        for dur, tid, kind in sorted(_DURATIONS, reverse=True)[:20]:
+            self.stream.writeln(f"[timing] {dur:8.1f}s  {kind:7s}  {tid}")
         self.stream.flush()
         return result
 
