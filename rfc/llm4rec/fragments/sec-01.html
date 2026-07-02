@@ -22,6 +22,7 @@
 <li><strong>Stage-1 embedding freezing is backend-specific</strong> (D7): the DTensor restore-after-step trick is proven on FSDP2 but <em>broken</em> under Megatron's DistributedOptimizer fp32 masters; the correct Megatron mechanism is gradient zeroing after <code>finalize_model_grads</code> plus a weight-decay override (<a href="#sec-8">&sect;8</a>).</li>
 <li><strong>Item&harr;SID is many-to-many from day one</strong> (D4): FORGE collision buckets, PIT's dynamic top-B index, and Latte's latent trees all break one-SID-per-item; the catalog, decoder, and metrics are specified accordingly (<a href="#sec-5">&sect;5</a>, <a href="#sec-10">&sect;10</a>).</li>
 <li><strong>New algorithm coverage</strong>: OneRec-Think/OneReason reasoning recipes (two-stage rollouts, stage-wise clipping, RFT, on-policy distillation), PLUM's co-pretraining and evaluation lessons, PIT/Latte/RPG extensions — folded into D10, D15, D16.</li>
+<li><strong>Serving implementation is analyzed to a decision</strong> (2026-06-10): a GR service decomposes into six layers with an engine-invariant core that stays tzrec code under every topology; wide beams turn on sharing KV <em>bandwidth</em>, not storage — beams-in-query measured 135&times; over per-sequence attention in a kernel-level A10 microbenchmark; recsys-examples' <code>sid-gr-inference</code> (PR #414) is adopted as the seed of the native Qwen3 serving runtime <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>; and W=512-synchronous serving on Qwen3-class backbones is demoted to a demand-gated contingency (<a href="#sec-10">&sect;10</a>).</li>
 </ul>
 
 <h3 id="sec-1-3">1.3 Decision index</h3>
@@ -42,7 +43,7 @@
 <tr><td>D10</td><td>GRPO default; ECPO/GBPO as plugins; on-policy distillation for capability retention; RFT + stage-wise clipping for reasoning</td><td><a href="#sec-9">&sect;9</a></td></tr>
 <tr><td>D11</td><td>Rollout decision matrix per backbone family (verl/vLLM where possible; tzrec-native loop for enc-dec and HSTU; GBPO needs none)</td><td><a href="#sec-9">&sect;9</a></td></tr>
 <tr><td>D12</td><td>Constrained decoding via STATIC-style CSR tensorized trie; unconstrained + post-grounding as a supported config</td><td><a href="#sec-10">&sect;10</a></td></tr>
-<tr><td>D13</td><td>Serving = host-side beam driver over an AOTI-exported single-step scorer (empirically proven); RTP-LLM/vLLM as engine alternatives</td><td><a href="#sec-10">&sect;10</a></td></tr>
+<tr><td>D13</td><td>Serving = tzrec GR runtime (AOTI scorer + host beam driver, seeded by recsys-examples sid-gr-inference for Qwen3); RTP-LLM/vLLM as engine alternatives; nearline envelope for first production</td><td><a href="#sec-10">&sect;10</a></td></tr>
 <tr><td>D14</td><td>Composable rewards: reward-model (P-Score), duration-aware shaping, legality/format (discard, never penalize), diversity</td><td><a href="#sec-9">&sect;9</a></td></tr>
 <tr><td>D15</td><td>MTP auxiliary loss as a v1.5 flag; parallel/speculative/diffusion decode as future work the interfaces must not preclude</td><td><a href="#sec-7">&sect;7</a></td></tr>
 <tr><td>D16</td><td>Latte latent tokens as a cheap option; PIT tokenizer co-evolution as a phase-2 streaming extension</td><td><a href="#sec-5">&sect;5</a></td></tr>
