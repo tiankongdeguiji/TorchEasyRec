@@ -39,9 +39,13 @@
 <tr><td><strong>SID legality</strong></td><td>Whether a generated SID prefix or full tuple exists in the catalog trie. Tracked as a reward signal and as a standing diagnostic — a non-zero illegal count under constrained decoding means the decoder regressed (<a href="#sec-9">&sect;9</a>, <a href="#sec-13">&sect;13</a>).</td></tr>
 <tr><td><strong>Post-grounding</strong></td><td>Mapping <em>unconstrained</em> beam outputs onto the catalog after decoding (dropping or matching illegal SIDs) instead of masking during decoding. A supported config: GRID/PLUM report sub-5% hallucination, sometimes matching constrained decode (D12, <a href="#sec-10">&sect;10</a>) <a class="cite" href="#ref-grid">[grid]</a><a class="cite" href="#ref-plum">[plum]</a>.</td></tr>
 <tr><td><strong>Think-Ahead</strong></td><td>OneRec-Think's serving split for reasoning models: an offline/nearline job precomputes per-user reasoning and SID-prefix caches; a small online non-reasoning model completes the final level under prefix constraints within latency budget (<a href="#sec-10">&sect;10</a>) <a class="cite" href="#ref-onerec-think">[onerec-think]</a>.</td></tr>
+<tr><td><strong><code>BackboneAdapter</code></strong></td><td>The tzrec-gr-serving runtime's model contract, formalized over sid-gr-inference's duck-typed protocol: <code>encode_context</code>, step-aware <code>decode_step</code>, <code>allocate_context_kv</code>, and head/vocab-layout metadata — one <code>gr_models</code> family per backbone (<a href="#sec-10-6">&sect;10.6</a>).</td></tr>
+<tr><td><strong>ContextKV / BeamKV</strong></td><td>The runtime's dense KV lease pools: ContextKV holds each request's context KV once, shared by all beams by construction; BeamKV holds the short per-beam generated-token KV (<a href="#sec-10-kv-sharing">&sect;10.4</a>, <a href="#sec-10-6">&sect;10.6</a>).</td></tr>
+<tr><td><strong><code>sid-gr-inference</code></strong></td><td>recsys-examples PR #414's standalone pure-python SID-GR serving framework (ContextKV/BeamKV pools, continuous-batching scheduler, CUDA graphs, SGLang-compatible <code>/generate</code>) — the upstream tzrec-gr-serving forks; alpha maturity tracked as <span class="risk">R-SIDGR</span> (<a href="#sec-10-engine-sidgr">&sect;10.5</a>) <a class="cite" href="#ref-repo-recsysexamples">[repo-recsysexamples]</a>.</td></tr>
+<tr><td><strong><code>tzrec-gr-serving</code></strong></td><td>The tzrec GR serving runtime, shipped as a separate deliverable consuming tzrec export artifacts: a fork of sid-gr-inference behind the BackboneAdapter contract, serving all softmax-attention GR backbones — HSTU excepted, which stays on tzrec's own stack (<a href="#sec-10-6">&sect;10.6</a>).</td></tr>
 </tbody>
 </table>
-<figcaption>Table 17.1 — Glossary of binding terms.</figcaption>
+<figcaption>Table 16.1 — Glossary of binding terms.</figcaption>
 </figure>
 
 </section>

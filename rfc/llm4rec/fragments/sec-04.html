@@ -5,7 +5,7 @@
 
 <h3 id="sec-4-1">4.1 Canonical system diagram</h3>
 
-<p>The architecture mirrors the OpenOneRec blueprint end to end — build SIDs, extend the LLM vocabulary with itemic tokens, co-pretrain/SFT, RL, constrained-decode serving <a class="cite" href="#ref-openonerec">[openonerec]</a> — realized on tzrec's existing orchestration seams (<a href="#sec-3">&sect;3</a>). Relative to the prior spec's master diagram, three boxes changed: the dense world defaults to FSDP2 with Megatron-core as scale-out (D8), the constrained-decoding box is a STATIC-style CSR tensorized trie rather than an open "tensorized trie task" (D12) <a class="cite" href="#ref-static">[static]</a>, and the serving box is an AOTInductor-exported single-step scorer driven by a host-side beam loop, empirically de-risked on this stack (D13).</p>
+<p>The architecture mirrors the OpenOneRec blueprint end to end — build SIDs, extend the LLM vocabulary with itemic tokens, co-pretrain/SFT, RL, constrained-decode serving <a class="cite" href="#ref-openonerec">[openonerec]</a> — realized on tzrec's existing orchestration seams (<a href="#sec-3">&sect;3</a>). Relative to the prior spec's master diagram, three boxes changed: the dense world defaults to FSDP2 with Megatron-core as scale-out (D8), the constrained-decoding box is a STATIC-style CSR tensorized trie rather than an open "tensorized trie task" (D12) <a class="cite" href="#ref-static">[static]</a>, and the serving box is an AOTInductor-exported single-step scorer driven by a host-side beam loop, empirically de-risked on this stack (D13) — since refined so that production serving of all softmax-attention backbones runs on <code>tzrec-gr-serving</code>, a fork of sid-gr-inference behind the <code>BackboneAdapter</code> contract (<a href="#sec-10-6">&sect;10.6</a>).</p>
 
 <pre class="diagram">
  OFFLINE TOKENIZER (Sec.5)
@@ -58,9 +58,12 @@
    format, diversity)                                                          [D10,D14]
         |
         v
- DECODE / SERVE (Sec.10): tzrec/acc/gr/                                       [D12,D13]
+ DECODE / SERVE (Sec.10): tzrec/acc/gr/ + tzrec-gr-serving fork               [D12,D13]
+   tzrec-gr-serving (separate deliverable): BackboneAdapter fork of
+   sid-gr-inference, serving all softmax-attention backbones (Sec.10.6)
    host-side beam driver over AOTI-exported single-step scorer
-   (explicit KV-cache I/O); SidConstrainedLogitsProcessor over the CSR trie,
+   (explicit KV-cache I/O) -- the HSTU path, eval/small-W elsewhere
+   SidConstrainedLogitsProcessor over the CSR trie,
    or unconstrained beam + post-grounding
    SidCatalogIndex grounding -&gt; item ids -&gt; TARGET_REPEAT_INTERLEAVE_KEY writer
 </pre>
@@ -87,7 +90,7 @@
 <li><code>tzrec/modules/llm/</code> — backbone wrappers (<code>Qwen3GRBackbone</code>, <code>LazyDecoderGRBackbone</code>, <code>EncoderDecoderGRBackbone</code>, <code>InhouseHstuGRBackbone</code>), <code>SidPredictionHead</code>, vocab-extension tool, HF&harr;mcore weight bridge (<a href="#sec-7">&sect;7</a>).</li>
 <li><code>tzrec/rl/</code> — verl-pluggable policy-loss/advantage estimators (ECPO, GBPO, on-policy distillation), composable rewards, the SID-constrained agent loop (<a href="#sec-9">&sect;9</a>).</li>
 <li><code>tzrec/distributed/</code> — <code>DenseParallelizer</code> with <code>Fsdp2Parallelizer</code> (default) and <code>MegatronParallelizer</code> backends, DeviceMesh construction from the existing WORLD (<a href="#sec-11">&sect;11</a>).</li>
-<li><code>tzrec/acc/gr/</code> — <code>SidConstrainedLogitsProcessor</code> (HF and vLLM v1 variants), CSR trie build/load, beam decoders, the host-side decode driver, AOTI export helpers (<a href="#sec-10">&sect;10</a>).</li>
+<li><code>tzrec/acc/gr/</code> — <code>SidConstrainedLogitsProcessor</code> (HF and vLLM v1 variants), CSR trie build/load, beam decoders, the host-side decode driver, AOTI export helpers, artifact versioning (<a href="#sec-10">&sect;10</a>). Library pieces only: the serving runtime itself ships as the separate <code>tzrec-gr-serving</code> deliverable — a fork of sid-gr-inference behind the <code>BackboneAdapter</code> contract, consuming tzrec export artifacts (<a href="#sec-10-6">&sect;10.6</a>).</li>
 <li><code>tzrec/datasets/gr/</code> — instruction/prompt builders and the 32K <code>SequencePacker</code> (<a href="#sec-6">&sect;6</a>).</li>
 <li><code>tzrec/features/semantic_id_feature.py</code> — <code>SemanticIdFeature</code>/<code>SequenceSemanticIdFeature</code> owning their <code>_fg_json</code> (<a href="#sec-6">&sect;6</a>).</li>
 <li><code>tzrec/gr/</code> — seven CLI verbs (<code>train_tokenizer | assign_sid | sft | rl | eval | export | serve</code>), thin argparse wrappers (<a href="#sec-12">&sect;12</a>).</li>
@@ -136,11 +139,11 @@
 <tr><td>4</td><td>Align &rarr; co-pretrain &rarr; SFT &rarr; RSFT</td><td><code>tzrec.gr.sft</code> (stage flag)</td><td>extended ckpt + joined training tables (<a href="#sec-6">&sect;6</a>)</td><td><strong>stage checkpoints</strong>, chained via <code>--fine_tune_checkpoint</code></td></tr>
 <tr><td>5</td><td>RL</td><td><code>tzrec.gr.rl</code> (ray/verl)</td><td>SFT ckpt + RL samples + trie bundle</td><td>RL checkpoint</td></tr>
 <tr><td>6</td><td>Evaluation</td><td><code>tzrec.gr.eval</code></td><td>any ckpt + SID asset table</td><td>HR@K / legality / retention report (<a href="#sec-13">&sect;13</a>)</td></tr>
-<tr><td>7</td><td>Export</td><td><code>tzrec.gr.export</code></td><td>final ckpt + catalog</td><td><strong>exported single-step scorer (AOTI) + CSR trie bundle</strong> + tokenizer/catalog assets</td></tr>
-<tr><td>8</td><td>Serving</td><td><code>tzrec.gr.serve</code> / PAI-EAS / RTP-LLM</td><td>export bundle</td><td>online generative-retrieval service (<a href="#sec-10">&sect;10</a>)</td></tr>
+<tr><td>7</td><td>Export</td><td><code>tzrec.gr.export</code></td><td>final ckpt + catalog</td><td><strong>exported single-step scorer (AOTI) + per-family checkpoint manifest (DCP&rarr;safetensors) + CSR trie bundle</strong> + tokenizer/catalog assets</td></tr>
+<tr><td>8</td><td>Serving</td><td><code>tzrec-gr-serving</code> (separate deliverable, PAI-EAS) / <code>tzrec.gr.serve</code> / RTP-LLM</td><td>per-family checkpoint manifest + CSR trie bundle + catalog/tokenizer assets</td><td>online generative-retrieval service (<a href="#sec-10">&sect;10</a>)</td></tr>
 </tbody>
 </table>
-<figcaption>Table 4.2 — Lifecycle stages and the artifact chain: embedding parquet &rarr; SID asset table &rarr; extended-vocab checkpoint &rarr; stage checkpoints &rarr; exported scorer + trie bundle.</figcaption>
+<figcaption>Table 4.2 — Lifecycle stages and the artifact chain: embedding parquet &rarr; SID asset table &rarr; extended-vocab checkpoint &rarr; stage checkpoints &rarr; exported scorer + checkpoint manifest + trie bundle.</figcaption>
 </figure>
 
 <p>Two properties of this chain are deliberate. First, the SID asset table is the <em>single</em> integration seam between the tokenizer subsystem and everything downstream — training joins, vocabulary id arithmetic, trie construction, and HR@K expansion all read the same table, so a re-tokenization (cadence risk <span class="risk">R-RETOK</span>) is a table swap plus dependent-artifact rebuild, not a code change. Second, every numbered stage is restartable from its inputs: the pipeline has no hidden coupling that would force a full rerun when, say, only the RL stage changes.</p>
@@ -162,6 +165,7 @@
 <tr><td>Vocab sizing (&sect;4.7.4)</td><td><code>sid_vocab_size</code> = itemic block padded to 24,832; total = begin + block (internally inconsistent: 176,501 vs "&asymp;176,246")</td><td>pad the <strong>total</strong>: tokenizer length 176,247 &rarr; align(&middot;,256) = <strong>176,384</strong>; <code>itemic_id_range = [151669, 176245)</code>; <code>sid_vocab_size</code> field removed (<a href="#sec-7">&sect;7</a>, <a href="#sec-12">&sect;12</a>)</td><td><strong>Revised</strong></td></tr>
 <tr><td>Constrained-decoding trie (<span class="risk">R-TRIE</span>)</td><td>per-prefix <code>SidTrie</code> required; tensorized trie an open tracked task</td><td><strong>resolved</strong>: STATIC-style packed CSR trie, one batched gather per step, ~1.2&ndash;3.1&nbsp;GB at 3&times;8192 / 250M items (D12) <a class="cite" href="#ref-static">[static]</a></td><td><strong>Resolved</strong></td></tr>
 <tr><td>Single-step scorer export (<span class="risk">R-EXPORT</span>)</td><td>unproven design task (TP-sharded logits, DTensor rejection)</td><td><strong>de-risked empirically</strong>: Qwen3 decode step with static KV cache exports on torch&nbsp;2.11 — bit-exact under <code>torch.export</code> incl. beam reorder; AOTI fp32-exact, bf16 within fusion noise; two gotchas documented (D13, <a href="#sec-10">&sect;10</a>)</td><td><strong>De-risked</strong></td></tr>
+<tr><td>Serving runtime</td><td>exported scorer + host beam driver as the sole serving path; no multi-backbone runtime</td><td><strong>D13 refined</strong>: the naive host loop is scoped to eval/small-W and HSTU by per-beam KV duplication; production serving of <strong>all softmax-attention backbones</strong> = <code>tzrec-gr-serving</code>, a fork of sid-gr-inference behind the <code>BackboneAdapter</code> contract, shipped as a separate deliverable (<a href="#sec-10-6">&sect;10.6</a>)</td><td><strong>Refined</strong></td></tr>
 <tr><td>Stage-1 itemic freezing</td><td>restore-frozen-slice after <code>optimizer.step()</code>, all backends</td><td><strong>backend-specific</strong> (D7): restore/grad-mask on FSDP2; on Megatron the restore trick is <em>broken</em> under DistributedOptimizer fp32 masters &rarr; zero <code>main_grad</code> rows after <code>finalize_model_grads</code> + <code>wd_mult=0.0</code> (<a href="#sec-8">&sect;8</a>)</td><td><strong>Revised</strong></td></tr>
 <tr><td>Item&harr;SID mapping</td><td>collision buckets with bounded fan-out (&sigma;)</td><td><strong>many-to-many from day one</strong> (D4): multi-path scoring + dedup in <code>SidCatalogIndex</code>; HR@K expands SID&rarr;items in beam order (FORGE buckets, PIT top-B, Latte latent trees)</td><td><strong>Revised</strong></td></tr>
 <tr><td>verl integration</td><td>two vendored forks (0.5.0 RL + 0.7.0.dev distill), target 0.8.0.dev</td><td>single <strong>verl 0.8 line, zero framework patches</strong>: agent-loop YAML, engine-level logits processors, custom reward/dataset hooks (D9); vLLM pinned as rollout backend (D11)</td><td><strong>Revised</strong></td></tr>

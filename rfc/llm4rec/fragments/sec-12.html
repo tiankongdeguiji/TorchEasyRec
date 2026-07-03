@@ -287,8 +287,8 @@ message RlConfig {
 <tr><td><code>tzrec.gr.sft</code></td><td><code>sft()</code></td><td>torchrun</td><td>stage from <code>SftConfig.stage</code>; dense-parallelizer hook + GR pipeline</td></tr>
 <tr><td><code>tzrec.gr.rl</code></td><td><code>rl()</code></td><td>ray (verl)</td><td>renders <code>RlConfig</code> + <code>verl_overrides</code> into verl Hydra config; isolated conda env (<span class="risk">R-ENV</span>)</td></tr>
 <tr><td><code>tzrec.gr.eval</code></td><td><code>evaluate_gr()</code></td><td>torchrun</td><td>constrained-beam HR@K with SID&rarr;item expansion (<a href="#sec-13">&sect;13</a>)</td></tr>
-<tr><td><code>tzrec.gr.export</code></td><td><code>export_gr()</code></td><td>single rank (<code>WORLD_SIZE=1</code>)</td><td>AOTI single-step scorer + trie bundle; assets via <code>--additional_export_config</code></td></tr>
-<tr><td><code>tzrec.gr.serve</code></td><td><code>serve_gr()</code></td><td>single node</td><td>host beam driver over the exported scorer (<a href="#sec-10">&sect;10</a>)</td></tr>
+<tr><td><code>tzrec.gr.export</code></td><td><code>export_gr()</code></td><td>single rank (<code>WORLD_SIZE=1</code>)</td><td>AOTI single-step scorer + trie bundle; per-family DCP&rarr;safetensors serving manifest (config.json + weights + tokenizer/SID manifest) for <code>tzrec-gr-serving</code> (<a href="#sec-10-6">&sect;10.6</a>); assets via <code>--additional_export_config</code></td></tr>
+<tr><td><code>tzrec.gr.serve</code></td><td><code>serve_gr()</code></td><td>single node</td><td>launches the <code>tzrec-gr-serving</code> runtime for softmax backbones (<a href="#sec-10-6">&sect;10.6</a>), or the AOTI scorer + host beam driver for export-clean deployment (<a href="#sec-10-3">&sect;10.3</a>)</td></tr>
 </tbody>
 </table>
 <figcaption>Table 12.1 — CLI verbs. <code>tzrec/main_gr.py</code> is an orchestration sibling of <code>main.py</code>, reusing <code>config_util</code>, <code>_create_features</code>, <code>create_dataloader</code>, and <code>CheckpointManager</code> verbatim.</figcaption>
