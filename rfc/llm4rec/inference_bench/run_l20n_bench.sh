@@ -60,6 +60,9 @@ done
 pkill -f serve_qwen3_gr_http || true; pkill -f tools/serve_qwen3_gr_http.py || true; sleep 15
 
 echo "===== ONLINE: SGLang fork server ====="
+# warmup slots: N concurrent warmups need N*(beam_width+1) request slots; the fork
+# treats slot exhaustion as FATAL and the pool clamps at 4096, so the README's
+# WARMUP_REQUESTS=16 (4112 slots) only fits by scheduling race - default to 8.
 ( PYTHONPATH=$SGLANG_REPO/python python -m sglang.launch_server \
     --model-path $MODEL_DIR --host 127.0.0.1 --port 30000 \
     --enable-beam-search --disable-radix-cache > "$RESULTS/sgl_server.log" 2>&1 ) &
@@ -71,7 +74,8 @@ for i in $(seq 1 150); do
 done
 for round in 1 2 3; do
   HOST=127.0.0.1 PORT=30000 MODEL_DIR=$MODEL_DIR REQUESTS=64 CONTEXT_LEN=5000 DECODE_STEPS=3 \
-  BEAM_WIDTH=256 REQUEST_RATE=inf MAX_CONCURRENCY=4 WARMUP_REQUESTS=16 \
+  BEAM_WIDTH=256 REQUEST_RATE=inf MAX_CONCURRENCY=4 \
+  WARMUP_REQUESTS=${SGLANG_ONLINE_WARMUP:-8} \
   bash scripts/run_sglang_serving_beam_benchmark.sh || true
 done
 pkill -f sglang.launch_server || true
