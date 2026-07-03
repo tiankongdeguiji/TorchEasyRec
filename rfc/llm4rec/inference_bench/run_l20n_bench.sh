@@ -11,6 +11,10 @@ export SGLANG_REPO=$BASE/sglang
 export GR_DECODE_ATTEN_ROOT=$RECSYS/corelib/gr_decode_atten
 export MODEL_DIR=$BASE/models/Qwen3-1.7B
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+# model + tokenizer are fully local; huggingface.co is blocked on this pod and
+# transformers-5.x hub freshness checks otherwise crash bench_serving (hub httpx
+# "client has been closed" on retry against the blocked endpoint)
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 RESULTS=$BASE/bench_results/l20n_$(date +%Y%m%d_%H%M%S)
 mkdir -p "$RESULTS"
@@ -29,6 +33,7 @@ python -m pytest tests/test_real_decode_attention_smoke.py -x -q
 python -m pytest tests/test_real_decode_attention_correctness.py -x -q
 PYTHONPATH=$SGLANG_REPO/python python "$BENCH_DIR/fork_beam_sanity.py"
 
+if [ "${SKIP_OFFLINE:-0}" != "1" ]; then
 echo "===== OFFLINE PERF (faithful grid) ====="
 CONTEXT_LENS="1000 5000" BEAM_WIDTHS="256" BATCH_SIZES="1 2 4 8" REPEAT=3 \
   bash scripts/run_offline_perf_benchmark.sh
@@ -36,6 +41,8 @@ CONTEXT_LENS="1000 5000" BEAM_WIDTHS="256" BATCH_SIZES="1 2 4 8" REPEAT=3 \
 echo "===== OFFLINE ACCURACY ====="
 CONTEXT_LENS="1000 5000" BEAM_WIDTHS="256" BATCH_SIZES="1 2 4 8" CORRECTNESS_REPEAT=1 \
   bash scripts/run_offline_accuracy_benchmark.sh
+
+fi
 
 echo "===== ONLINE: GR server ====="
 ( GR_MODEL_DIR=$MODEL_DIR GR_CONTEXT_LEN=5000 GR_DECODE_STEPS=3 GR_BEAM_WIDTH=256 \
