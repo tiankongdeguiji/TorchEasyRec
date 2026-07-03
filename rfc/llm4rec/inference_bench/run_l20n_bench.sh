@@ -11,10 +11,11 @@ export SGLANG_REPO=$BASE/sglang
 export GR_DECODE_ATTEN_ROOT=$RECSYS/corelib/gr_decode_atten
 export MODEL_DIR=$BASE/models/Qwen3-1.7B
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-# model + tokenizer are fully local; huggingface.co is blocked on this pod and
-# transformers-5.x hub freshness checks otherwise crash bench_serving (hub httpx
-# "client has been closed" on retry against the blocked endpoint)
-export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+# huggingface.co is blocked on this pod; bench_serving's "random" dataset samples
+# from ShareGPT and downloads it from the hub, so route ALL hub traffic through
+# the mirror (offline mode is not enough - the dataset must be fetchable once).
+export HF_ENDPOINT=https://hf-mirror.com
+unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 RESULTS=$BASE/bench_results/l20n_$(date +%Y%m%d_%H%M%S)
 mkdir -p "$RESULTS"
