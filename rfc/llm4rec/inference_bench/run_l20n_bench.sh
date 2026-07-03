@@ -9,7 +9,7 @@ RECSYS=$BASE/recsys-examples
 SIDGR=$RECSYS/examples/sid-gr-inference
 export SGLANG_REPO=$BASE/sglang
 export GR_DECODE_ATTEN_ROOT=$RECSYS/corelib/gr_decode_atten
-export MODEL_DIR=$BASE/models/Qwen3-1.7B
+export MODEL_DIR=${MODEL_DIR:-$BASE/models/Qwen3-1.7B}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 # huggingface.co is blocked on this pod; bench_serving's "random" dataset samples
 # from ShareGPT and downloads it from the hub, so route ALL hub traffic through
