@@ -52,6 +52,8 @@ sides (GR HTTP :8000, SGLang fork :30000) driven by `sglang.bench_serving`.
 
 ## Results
 
-See `results/` (committed after each run): offline perf/accuracy summaries, online
-jsonl steady-state numbers, env manifest, and the three-way comparison
-(A10 / SM120-72GB / H100 README).
+`results/comparison.md` carries the three-way comparison (A10 / SM120-72GB / H100
+README): GR beats the SGLang beam fork in all 8 offline cells on every arch
+(SM120: 1.451-1.607x, online 1.50x at 64/64 completion, top1 parity 28/30), and the
+run doubles as the first SM120/Blackwell validation of `gr_decode_atten`.
+Raw artifacts under `results/sm120/`.
