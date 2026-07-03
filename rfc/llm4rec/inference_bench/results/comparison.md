@@ -80,3 +80,35 @@ Raw artifacts: `sm120/offline/` (perf + accuracy summaries, env manifest),
 `sm120/online/` (bench_serving jsonl, steady state = last line).
 A10 artifacts and full narrative: `experiments/llm4rec/rfc_research/`
 (gitignored, local box) and the RFC section 10.
+
+## Qwen3-0.6B bf16 on SM120 (same grid, same faithful config)
+
+Offline (ratio = SGLang/GR):
+
+|  ctx | batch | 0.6B GR ms | 0.6B ratio | 1.7B ratio (SM120) | H100 1.7B ratio |
+| ---: | ----: | ---------: | ---------: | -----------------: | --------------: |
+| 1000 |     1 |       19.5 |      1.842 |              1.491 |           1.903 |
+| 1000 |     2 |       33.9 |      1.804 |              1.455 |           2.086 |
+| 1000 |     4 |       61.4 |      1.803 |              1.451 |           2.143 |
+| 1000 |     8 |      114.0 |      1.906 |              1.453 |           2.138 |
+| 5000 |     1 |       55.9 |      2.108 |              1.607 |           2.238 |
+| 5000 |     2 |      109.9 |      2.088 |              1.563 |           2.217 |
+| 5000 |     4 |      231.5 |      2.006 |              1.532 |           2.269 |
+| 5000 |     8 |      460.9 |      2.001 |              1.525 |           2.226 |
+
+All cells verified succeeded_requests == requests. Accuracy: top1 1.000 in 5/8 cells
+(0.500 on ctx1000/bs2 = 1 of 2 requests; 0.875 on two bs8 cells), topK 0.938-0.955.
+
+Online (ctx5000, beam 256, mc=4, 64 req, steady state):
+
+| model      | GR req/s | GR p50/p99 ms | SGLang req/s | SGLang p50/p99 ms | ratio |
+| ---------- | -------: | ------------: | -----------: | ----------------: | ----: |
+| Qwen3-0.6B |    16.11 |     249 / 262 |         8.43 |         473 / 477 | 1.91x |
+| Qwen3-1.7B |     8.53 |     468 / 475 |         5.69 |         701 / 704 | 1.50x |
+
+Observation: at 0.6B the SM120 ratios (1.80-2.11x offline, 1.91x online) reach the
+H100/1.7B reference band (1.90-2.27x) - as the per-token GEMMs shrink, GR's lower
+fixed overheads (CUDA-graphed decode, no scheduler round-trips) dominate the
+comparison; upstream's own primary validation target is Qwen3-0.6B. The remaining
+1.7B gap on SM120 is therefore mostly arch/tuning of the larger GEMMs, not harness
+or config differences.
