@@ -10,6 +10,7 @@ SIDGR=$RECSYS/examples/sid-gr-inference
 export SGLANG_REPO=$BASE/sglang
 export GR_DECODE_ATTEN_ROOT=$RECSYS/corelib/gr_decode_atten
 export MODEL_DIR=${MODEL_DIR:-$BASE/models/Qwen3-1.7B}
+BENCH_CTX=${BENCH_CTX:-5000}   # online-phase context length
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 # huggingface.co is blocked on this pod; bench_serving's "random" dataset samples
 # from ShareGPT and downloads it from the hub, so route ALL hub traffic through
@@ -46,14 +47,14 @@ CONTEXT_LENS="1000 5000" BEAM_WIDTHS="256" BATCH_SIZES="1 2 4 8" CORRECTNESS_REP
 fi
 
 echo "===== ONLINE: GR server ====="
-( GR_MODEL_DIR=$MODEL_DIR GR_CONTEXT_LEN=5000 GR_DECODE_STEPS=3 GR_BEAM_WIDTH=256 \
+( GR_MODEL_DIR=$MODEL_DIR GR_CONTEXT_LEN=$BENCH_CTX GR_DECODE_STEPS=3 GR_BEAM_WIDTH=256 \
   GR_MAX_BATCH_SIZE=4 GR_BEAM_KV_POOL_CAPACITY=4 GR_CONTEXT_KV_POOL_CAPACITY=4 \
   GR_HTTP_HOST=127.0.0.1 GR_HTTP_PORT=8000 GR_DECODE_BACKEND=real GR_DEVICE=cuda \
   bash scripts/serve_qwen3_gr_http.sh > "$RESULTS/gr_server.log" 2>&1 ) &
 for i in $(seq 1 120); do curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1 && break; sleep 5; done
 curl -fsS http://127.0.0.1:8000/ready
 for round in 1 2 3; do
-  HOST=127.0.0.1 PORT=8000 MODEL_DIR=$MODEL_DIR REQUESTS=64 CONTEXT_LEN=5000 DECODE_STEPS=3 \
+  HOST=127.0.0.1 PORT=8000 MODEL_DIR=$MODEL_DIR REQUESTS=64 CONTEXT_LEN=$BENCH_CTX DECODE_STEPS=3 \
   BEAM_WIDTH=256 REQUEST_RATE=inf MAX_CONCURRENCY=4 WARMUP_REQUESTS=0 \
   bash scripts/run_gr_sglang_bench_serving_beam_benchmark.sh || true
 done
@@ -73,7 +74,7 @@ for i in $(seq 1 150); do
   sleep 5
 done
 for round in 1 2 3; do
-  HOST=127.0.0.1 PORT=30000 MODEL_DIR=$MODEL_DIR REQUESTS=64 CONTEXT_LEN=5000 DECODE_STEPS=3 \
+  HOST=127.0.0.1 PORT=30000 MODEL_DIR=$MODEL_DIR REQUESTS=64 CONTEXT_LEN=$BENCH_CTX DECODE_STEPS=3 \
   BEAM_WIDTH=256 REQUEST_RATE=inf MAX_CONCURRENCY=4 \
   WARMUP_REQUESTS=${SGLANG_ONLINE_WARMUP:-8} \
   bash scripts/run_sglang_serving_beam_benchmark.sh || true
