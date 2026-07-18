@@ -61,7 +61,7 @@ def main() -> None:
     assert beams, f"no beam_results in response: {json.dumps(first)[:500]}"
     bad = 0
     for beam in beams:
-        toks = [t for t in beam["token_ids"] if t != args.eos_token_id]
+        toks = [t for t in beam["output_ids"] if t != args.eos_token_id]
         if tuple(toks) not in paths:
             bad += 1
     print(f"beams={len(beams)} off_catalog={bad}")

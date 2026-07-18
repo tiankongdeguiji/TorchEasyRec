@@ -60,6 +60,7 @@ for n in $CATALOG_SIZES; do
     --out "$RESULTS/catalogs/sid_${n}.jsonl" | tee "$RESULTS/catalogs/sid_${n}.stats.json"
 done
 
+if [ "${SKIP_UNCON:-0}" != "1" ]; then
 echo "===== A: unconstrained baseline (same-day parity) ====="
 stop_server
 start_server "" "$RESULTS/uncon_server.log"
@@ -68,6 +69,7 @@ stop_server
 start_server "GR_PROFILE_CONTINUOUS_DECODE=1" "$RESULTS/uncon_server_prof.log"
 run_rounds uncon_prof 1
 stop_server
+fi
 
 for n in $CATALOG_SIZES; do
   echo "===== B: constrained, catalog $n items ====="
@@ -88,13 +90,13 @@ done
 
 echo "===== C: trie mask microbench ====="
 for n in $CATALOG_SIZES; do
-  ( cd "$SIDGR" && python "$BENCH_DIR/bench_trie_mask.py" \
+  ( cd "$SIDGR" && PYTHONPATH=src python "$BENCH_DIR/bench_trie_mask.py" \
       --catalog "$RESULTS/catalogs/sid_${n}.jsonl" --device cuda ) \
     | tee -a "$RESULTS/trie_mask_micro.jsonl"
 done
 
 echo "===== SUMMARY ====="
-for f in "$RESULTS"/uncon/*.jsonl "$RESULTS"/cat*/*.jsonl; do
+for f in "$RESULTS"/uncon*/*.jsonl "$RESULTS"/cat[0-9]*/*.jsonl; do
   [ -f "$f" ] || continue
   echo "--- $f"
   tail -1 "$f" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print('completed', d.get('completed'), '| req/s', round(d.get('request_throughput',0),3), '| median_e2e_ms', round(d.get('median_e2e_latency_ms',0),1), '| p99_e2e_ms', round(d.get('p99_e2e_latency_ms',0),1))"
