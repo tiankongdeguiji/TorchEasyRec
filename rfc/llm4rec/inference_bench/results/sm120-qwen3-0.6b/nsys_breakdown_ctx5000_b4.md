@@ -185,3 +185,26 @@ Primary rows use active CUDA/stage windows and pure kernel-name buckets. This av
 ## Diagnostic Notes
 
 - SGLang module NVTX buckets are empty. For per-layer/per-op SGLang breakdown, rerun with SGLANG_PROFILE_MODULES=1; use the non-profile run for fair latency.
+
+## Addendum: SGLang-side kernel/timeline detail (same trace)
+
+Window 462.3 ms (~= engine wall 464.3); kernel total 445.8 ms = 96.4% GPU-busy;
+1925 launches + 29 CUDA-graph launches; CPU gaps >50us only 7.9 ms.
+
+Timeline phases (from kernel end-times): true prefill 0-~120 ms (ragged prefill
+attention 41.8 ms); beam-expansion step ~120-166 ms (paged "prefill" attention
+17.7 ms = the 1->256 widening); decode steps ~166-450 ms; final softmax/topk tail
+to ~462 ms.
+
+| bucket                                     |    ms | % of kernels | note                                                                                            |
+| ------------------------------------------ | ----: | -----------: | ----------------------------------------------------------------------------------------------- |
+| BatchDecodeWithPagedKVCacheKernel          | 257.7 |        57.8% | 56 calls (28 layers x 2 steps), 1024 single-token rows each re-reading its ~5000-token paged KV |
+| GEMM / linear                              |  91.5 |        20.5% | ~= GR's 90.5                                                                                    |
+| prefill attention (ragged + paged step-1)  |  59.5 |        13.3% | ~= GR's 61.5 flash prefill                                                                      |
+| norm / rope / act / kv-store / elementwise |   ~18 |         4.0% |                                                                                                 |
+| sampling (mbtopk + LogSoftMax)             |   8.4 |         1.9% |                                                                                                 |
+
+GR-vs-SGLang on identical work: decode attention 18.8 vs 257.7 ms (13.7x) - the
+entire engine gap (226.6 vs 445.8 ms kernels) is this one kernel class; GEMMs,
+prefill attention, and scheduling efficiency are equivalent. Beam mode is NOT
+python-bound on either engine at bs4.
