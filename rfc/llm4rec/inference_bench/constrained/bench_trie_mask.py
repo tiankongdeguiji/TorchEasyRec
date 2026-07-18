@@ -47,6 +47,7 @@ def main() -> None:
     """Run the microbench and print one JSON result line per timing."""
     p = argparse.ArgumentParser()
     p.add_argument("--catalog", required=True)
+    p.add_argument("--backend", choices=("python", "static"), default="python")
     p.add_argument("--beam-width", type=int, default=256)
     p.add_argument("--vocab-size", type=int, default=151936)
     p.add_argument("--eos-token-id", type=int, default=151645)
@@ -63,7 +64,9 @@ def main() -> None:
     t0 = time.perf_counter()
     catalog = SemanticItemCatalog.from_jsonl(args.catalog)
     provider = catalog.provider(
-        vocab_size=args.vocab_size, eos_token_id=args.eos_token_id
+        vocab_size=args.vocab_size,
+        eos_token_id=args.eos_token_id,
+        mask_backend=args.backend,
     )
     load_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -114,6 +117,7 @@ def main() -> None:
 
     results = {
         "catalog": args.catalog,
+        "backend": args.backend,
         "items": catalog.item_count,
         "device": args.device,
         "beam_width": width,
@@ -128,16 +132,17 @@ def main() -> None:
         "step2_mask_current_ms": round(
             _time(lambda: current_step_mask(gen_step2), args.iters, sync), 2
         ),
-        "step1_mask_rowbatched_ms": round(
-            _time(lambda: rowbatched_step_mask(gen_step1), args.iters, sync), 2
-        ),
-        "step1_mask_hostbuilt_ms": round(
-            _time(lambda: hostbuilt_step_mask(gen_step1), args.iters, sync), 2
-        ),
         "step1_allowed_tokens_total": sum(
             len(provider.allowed_next((t,))) for t in beams_l1
         ),
     }
+    if args.backend == "python":
+        results["step1_mask_rowbatched_ms"] = round(
+            _time(lambda: rowbatched_step_mask(gen_step1), args.iters, sync), 2
+        )
+        results["step1_mask_hostbuilt_ms"] = round(
+            _time(lambda: hostbuilt_step_mask(gen_step1), args.iters, sync), 2
+        )
     print(json.dumps(results))
 
 

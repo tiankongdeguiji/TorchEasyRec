@@ -16,7 +16,9 @@ unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULTS=${RESULTS:-$BASE/bench_results/constrained_ctx1000_$(date +%Y%m%d_%H%M%S)}
 CATALOG_SIZES=${CATALOG_SIZES:-"10000 100000 1000000"}
+MASK_BACKENDS=${MASK_BACKENDS:-"python static"}
 ROUNDS=${ROUNDS:-3}
+RUN_PROF=${RUN_PROF:-0}
 CTX=1000
 mkdir -p "$RESULTS/catalogs"
 
@@ -66,33 +68,42 @@ stop_server
 start_server "" "$RESULTS/uncon_server.log"
 run_rounds uncon "$ROUNDS"
 stop_server
+if [ "$RUN_PROF" = "1" ]; then
 start_server "GR_PROFILE_CONTINUOUS_DECODE=1" "$RESULTS/uncon_server_prof.log"
 run_rounds uncon_prof 1
 stop_server
 fi
+fi
 
 for n in $CATALOG_SIZES; do
-  echo "===== B: constrained, catalog $n items ====="
+for backend in $MASK_BACKENDS; do
+  echo "===== B: constrained, catalog $n items, backend $backend ====="
   CAT="$RESULTS/catalogs/sid_${n}.jsonl"
-  start_server "GR_CATALOG_JSONL=$CAT GR_CATALOG_EOS_TOKEN_ID=151645" \
-    "$RESULTS/cat${n}_server.log" || { stop_server; continue; }
-  curl -fsS http://127.0.0.1:8000/catalog/status | tee "$RESULTS/cat${n}_status.json" || true
+  TAG="cat${n}_${backend}"
+  CATENV="GR_CATALOG_JSONL=$CAT GR_CATALOG_EOS_TOKEN_ID=151645 GR_CATALOG_MASK_BACKEND=$backend"
+  start_server "$CATENV" "$RESULTS/${TAG}_server.log" || { stop_server; continue; }
+  curl -fsS http://127.0.0.1:8000/catalog/status | tee "$RESULTS/${TAG}_status.json" || true
   if ! python "$BENCH_DIR/validate_catalog_paths.py" --catalog "$CAT" --context-len $CTX; then
-    echo "GATE_FAIL_CONSTRAINED_$n"; tail -80 "$RESULTS/cat${n}_server.log"; stop_server; continue
+    echo "GATE_FAIL_CONSTRAINED_${n}_${backend}"; tail -80 "$RESULTS/${TAG}_server.log"; stop_server; continue
   fi
-  run_rounds "cat${n}" "$ROUNDS"
+  run_rounds "$TAG" "$ROUNDS"
   stop_server
-  start_server "GR_CATALOG_JSONL=$CAT GR_CATALOG_EOS_TOKEN_ID=151645 GR_PROFILE_CONTINUOUS_DECODE=1" \
-    "$RESULTS/cat${n}_server_prof.log" || { stop_server; continue; }
-  run_rounds "cat${n}_prof" 1
+  if [ "$RUN_PROF" = "1" ]; then
+  start_server "$CATENV GR_PROFILE_CONTINUOUS_DECODE=1" \
+    "$RESULTS/${TAG}_server_prof.log" || { stop_server; continue; }
+  run_rounds "${TAG}_prof" 1
   stop_server
+  fi
+done
 done
 
 echo "===== C: trie mask microbench ====="
 for n in $CATALOG_SIZES; do
+for backend in $MASK_BACKENDS; do
   ( cd "$SIDGR" && PYTHONPATH=src python "$BENCH_DIR/bench_trie_mask.py" \
-      --catalog "$RESULTS/catalogs/sid_${n}.jsonl" --device cuda ) \
+      --catalog "$RESULTS/catalogs/sid_${n}.jsonl" --backend "$backend" --device cuda ) \
     | tee -a "$RESULTS/trie_mask_micro.jsonl"
+done
 done
 
 echo "===== SUMMARY ====="
