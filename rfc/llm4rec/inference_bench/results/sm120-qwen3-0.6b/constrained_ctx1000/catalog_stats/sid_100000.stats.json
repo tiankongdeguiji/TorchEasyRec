@@ -1,0 +1,1 @@
+{"items": 100000, "l1_fanout": 8192, "avg_l2_children": 12.2, "avg_l3_children": 1.001, "est_step1_mask_writes_beam256": 3122}

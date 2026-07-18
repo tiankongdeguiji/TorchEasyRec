@@ -57,3 +57,8 @@ README): GR beats the SGLang beam fork in all 8 offline cells on every arch
 (SM120: 1.451-1.607x, online 1.50x at 64/64 completion, top1 parity 28/30), and the
 run doubles as the first SM120/Blackwell validation of `gr_decode_atten`.
 Raw artifacts under `results/sm120/`.
+
+`results/constrained-decoding-eval-ctx1000.md` measures the trie-based item
+constraints (`--catalog-jsonl`) at the online ctx1000 operating point: p50
+78.7ms -> 1451ms (18.4x) at a 1M-item catalog, root-caused to per-token Python
+CUDA element-writes in `TrieItemMaskProvider`; harness under `constrained/`.
