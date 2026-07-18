@@ -11,7 +11,8 @@ tensorized backend we implemented from
 `llm4rec/sidgr-bench` @f7d61a2).
 
 Harness: `../constrained/eval_constrained_ctx1000.sh` (branch
-`rfc_llm4rec_inference_bench`). Raw artifacts: `sm120-qwen3-0.6b/ constrained_ctx1000/` (Part 1 run, @794adce) and
+`rfc_llm4rec_inference_bench`). Raw artifacts:
+`sm120-qwen3-0.6b/constrained_ctx1000/` (Part 1 run, @794adce) and
 `sm120-qwen3-0.6b/constrained_ctx1000_backends/` (Part 2 full matrix rerun).
 Run dates 2026-07-18.
 
