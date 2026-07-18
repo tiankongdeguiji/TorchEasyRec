@@ -115,3 +115,66 @@ measured earlier at 135x at the isolated-kernel level).
 - Single cell profiled (ctx5000/bs4 = the online operating point). Other cells scale
   per section 5; re-run `run_short_context_nsys_compare.sh` with CONTEXT_LEN/REQUESTS
   overrides to reproduce any cell.
+
+# Part 2: ctx 1000 operating point (online + breakdown)
+
+Same model/hardware/method; online at ctx 1000, beam 256, mc=4, 64 requests.
+
+## Online results
+
+| side        |    req/s |     p50 E2E |  p99 E2E | note                                                                                                                                                                            |
+| ----------- | -------: | ----------: | -------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| sid-gr      | **50.2** | **78.7 ms** |   ~84 ms | clean rounds 1-2 (50.35/50.13 req/s); round 3 hit ONE ~400 ms transient straggler (p50 unchanged 79.6, p99 398) - disclosed, same one-off class as earlier A10 round-3 outliers |
+| SGLang fork |     34.0 |    115.9 ms | 119.6 ms | tight in all rounds                                                                                                                                                             |
+
+Ratio ~1.47-1.48x on both axes (throughput and inverse-p50, consistent).
+
+## E2E decomposition
+
+- sid-gr 78.7 ms = engine 61.4 (prefill 25.6 + decode 34.8 + scheduler ~1) + **serving ~17.3 ms**.
+- SGLang 115.9 ms = engine 110.6 + serving ~5.3 ms.
+- The GR serving overhead is ~constant (~17 ms at both contexts - dominated by the
+  stdlib HTTP server and serialization of 256-beam responses, not tokenize length),
+  so at short contexts it is 22% of GR's E2E vs 7% at ctx5000. This compresses the
+  online ratio (1.47x) below the engine ratio (1.80x). It is also GR's cheapest
+  optimization target at short contexts (slim response payload / faster server).
+
+## Kernel distributions (profiled window; use for shares, not totals)
+
+sid-gr, 58.6 ms kernels (GEMM-dominated regime):
+
+| bucket                                  |   ms |     % |
+| --------------------------------------- | ---: | ----: |
+| GEMM / linear                           | 29.7 | 50.7% |
+| prefill flash attention (in "other")    |   ~8 |  ~13% |
+| top-K / beam selection                  |  6.3 | 10.7% |
+| decode beam attention (gr_decode_atten) |  4.7 |  8.0% |
+| memcpy / fill                           |  3.4 |  5.8% |
+| rope / norm / act / misc                | ~6.5 |  ~11% |
+
+SGLang fork, 96.3 ms kernels (still attention-dominated):
+
+| bucket                            |   ms |     % |
+| --------------------------------- | ---: | ----: |
+| BatchDecodeWithPagedKVCacheKernel | 47.0 | 48.8% |
+| GEMM / linear                     | 29.5 | 30.6% |
+| top-K + LogSoftMax                | 10.8 | 11.2% |
+| prefill attention                 |  3.3 |  3.4% |
+| rest                              | ~5.7 |   ~6% |
+
+## Head-to-head and cross-context scaling
+
+| metric                  |              ctx1000 |                                       ctx5000 |
+| ----------------------- | -------------------: | --------------------------------------------: |
+| GR decode attention     |               4.7 ms |   18.8 ms (4.0x - scales with ctx, read once) |
+| SGLang decode attention |              47.0 ms | 257.7 ms (5.5x - scales with ctx x beam rows) |
+| decode-attention gap    |                10.0x |                                         13.7x |
+| GEMM (both engines)     |             ~29.6 ms |                                        ~91 ms |
+| engine wall ratio       |                1.80x |                                         2.00x |
+| online E2E ratio        |                1.47x |                                         1.90x |
+| GR profile shape        | GEMM-dominated (51%) |                     prefill-attn + GEMM (67%) |
+
+Same mechanism at both contexts: GEMMs and prefill are equivalent across engines;
+the gap is per-beam-row context-KV re-reads in SGLang's decode attention, and it
+widens with context length. At short contexts GR's fixed costs (beam top-k ~6.3 ms,
+~17 ms serving layer) become the dominant self-optimization targets.
