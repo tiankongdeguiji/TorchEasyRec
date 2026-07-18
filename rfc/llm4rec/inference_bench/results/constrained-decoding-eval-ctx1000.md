@@ -119,7 +119,8 @@ The remaining structural costs — per-request provider serialization at batch 4
 and the per-beam Python walk — are what the RFC's STATIC-style CSR tensorized
 trie (D-decision, §10) eliminates: allowed-token lookup becomes a batched GPU
 gather over CSR arrays, with no per-beam Python and no batch_size=1 provider
-limit. The 9.7 s Python trie build at 1M items (server startup / `/catalog/ reload`) also argues for a precompiled CSR artifact.
+limit. The 9.7 s Python trie build at 1M items (server startup and
+`/catalog/reload`) also argues for a precompiled CSR artifact.
 
 ## Caveats
 
