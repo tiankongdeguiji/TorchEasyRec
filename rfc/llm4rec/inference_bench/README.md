@@ -58,7 +58,11 @@ README): GR beats the SGLang beam fork in all 8 offline cells on every arch
 run doubles as the first SM120/Blackwell validation of `gr_decode_atten`.
 Raw artifacts under `results/sm120/`.
 
-`results/constrained-decoding-eval-ctx1000.md` measures the trie-based item
-constraints (`--catalog-jsonl`) at the online ctx1000 operating point: p50
-78.7ms -> 1451ms (18.4x) at a 1M-item catalog, root-caused to per-token Python
-CUDA element-writes in `TrieItemMaskProvider`; harness under `constrained/`.
+`results/constrained-decoding-eval-ctx1000.md` measures item-constrained
+decoding (`--catalog-jsonl`) at the online ctx1000 operating point. Part 1:
+the stock Python trie walk costs p50 78.7ms -> 1451ms (18.4x) at a 1M-item
+catalog (per-token CUDA element-writes in `TrieItemMaskProvider`). Part 2: our
+STATIC CSR backend (`--catalog-mask-backend static`, recsys-examples
+`llm4rec/sidgr-bench`) is catalog-size-independent at p50 ~94ms (1.19x
+unconstrained; 15.4x over the python walk at 1M, step-mask 410x). Harness
+under `constrained/`.

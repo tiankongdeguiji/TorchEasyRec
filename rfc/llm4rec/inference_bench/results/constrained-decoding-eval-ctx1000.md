@@ -1,27 +1,32 @@
 # sid-gr-inference constrained decoding cost — ctx1000 / beam 256 / mc=4 / 64 requests
 
-Evaluation of the **current trie-based item-constraint implementation**
-(`TrieItemMaskProvider`, `--catalog-jsonl`) at the established online operating
-point: Qwen3-0.6B bf16, SM120 (RTX PRO 5000 72GB), context 1000, beam width 256,
-decode_steps 3, client concurrency 4 (`mc=4`), 64 requests, 3 rounds. All prior
-benchmarks in this directory ran **unconstrained** decode; this is the first
-measurement with the catalog engaged.
+Evaluation of item-constrained decoding (`--catalog-jsonl`) at the established
+online operating point: Qwen3-0.6B bf16, SM120 (RTX PRO 5000 72GB), context
+1000, beam width 256, decode_steps 3, client concurrency 4 (`mc=4`), 64
+requests, 3 rounds. Two parts: **Part 1** measures the stock Python trie-walk
+implementation (`TrieItemMaskProvider`); **Part 2** measures the STATIC (CSR)
+tensorized backend we implemented from
+[youtube/static-constraint-decoding](https://github.com/youtube/static-constraint-decoding)
+(`StaticTrieItemMaskProvider`, `--catalog-mask-backend static`, recsys-examples
+`llm4rec/sidgr-bench` @f7d61a2).
 
 Harness: `../constrained/eval_constrained_ctx1000.sh` (branch
-`rfc_llm4rec_inference_bench`). Raw artifacts:
-`sm120-qwen3-0.6b/constrained_ctx1000/`. Run date 2026-07-18, recsys-examples
-`llm4rec/sidgr-bench` @794adce.
+`rfc_llm4rec_inference_bench`). Raw artifacts: `sm120-qwen3-0.6b/ constrained_ctx1000/` (Part 1 run, @794adce) and
+`sm120-qwen3-0.6b/constrained_ctx1000_backends/` (Part 2 full matrix rerun).
+Run dates 2026-07-18.
 
 ## TL;DR
 
-**Constrained decoding is a server-side Python bottleneck that dominates E2E at
-realistic catalog sizes.** At 1M items, online p50 goes **78.7 ms → 1451 ms
-(18.4×)** and throughput **50.3 → 2.8 req/s**. The cost is *not* GPU masking —
-it is the per-beam Python trie walk that sets each allowed token with an
-individual `mask[beam, token] = True` write on a CUDA tensor (~8.7 µs per
-dispatcher round-trip, ~31k writes per request per step at 1M items). The same
-trie walk with batched writes costs 9.7 ms instead of 270 ms (28×), and the
-RFC's STATIC-style CSR trie removes the Python walk entirely.
+**The stock constrained decoding is a server-side Python bottleneck that
+dominates E2E at realistic catalog sizes; the STATIC CSR backend removes it.**
+At 1M items, the Python walk takes online p50 from **78.7 ms → 1450 ms
+(18.4×)** and throughput from **50.3 → 2.8 req/s**; the cost is *not* GPU
+masking but one CUDA element-write per allowed token per beam (~8.7 µs each,
+~31k per request per step). The STATIC backend — dense level-0 head + flat CSR
+transition tail, ~15 tensor ops per step mask — is **catalog-size-independent
+at p50 ≈ 94 ms (1.19× unconstrained, 42.3 req/s)**: 15.4× faster than the
+Python walk at 1M items, with bit-identical masks (equivalence-tested) and all
+beams on-catalog.
 
 ## Setup
 
@@ -116,11 +121,66 @@ only the tensor writes (step-1 mask, 1M catalog):
 So a ~30-line change (batch the writes per beam) already collapses the step
 cost to ~10 ms; the pure Python trie walk itself is under 9 ms of the 270 ms.
 The remaining structural costs — per-request provider serialization at batch 4
-and the per-beam Python walk — are what the RFC's STATIC-style CSR tensorized
-trie (D-decision, §10) eliminates: allowed-token lookup becomes a batched GPU
-gather over CSR arrays, with no per-beam Python and no batch_size=1 provider
-limit. The 9.7 s Python trie build at 1M items (server startup and
+and the per-beam Python walk — are what the STATIC CSR backend (Part 2)
+eliminates. The 9.7 s Python trie build at 1M items (server startup and
 `/catalog/reload`) also argues for a precompiled CSR artifact.
+
+## Part 2: STATIC (CSR) tensorized backend
+
+We implemented the RFC's STATIC-style constraint decoding (D-decision, §10) as
+`gr_runtime/static_item_constraints.py` in sid-gr-inference, adapting the
+reference at github.com/youtube/static-constraint-decoding: a dense level-0
+head (`start_mask`; level-0 state of token `t` is `t + 1`), a flat CSR
+transition tail (`edge_keys = parent * V + token`, globally sorted, walked
+with one `searchsorted` per trace level), and a single `index_put` to
+materialize the `[W, vocab]` mask. The reference's V×V dense second layer does
+not transfer (it masks a 2048-codebook vocab; the LLM vocab is 151936), so
+only level 0 is dense. Selectable per server via `--catalog-mask-backend static` / `GR_CATALOG_MASK_BACKEND`; hot reload keeps the backend;
+`/catalog/status` reports it. Masks are bit-identical to the Python walk
+(`tests/test_static_item_constraints.py`, equivalence on CPU and CUDA over
+depths 2–4, EOS/terminal/off-trie rows), and the on-catalog beam gate passed
+in every phase below.
+
+Same-day A/B, all rounds 64/64 completed (steady-state medians; stragglers
+disclosed below):
+
+| config          | p50 e2e (ms) | p99 e2e (ms) | req/s | p50 vs uncon | vs python backend |
+| --------------- | ------------ | ------------ | ----- | ------------ | ----------------- |
+| unconstrained   | 78.9         | 84.5         | 50.3  | 1×           | —                 |
+| 10k python      | 314          | 321          | 12.7  | 3.98×        | 1×                |
+| 10k **static**  | **93.0**     | 100          | 42.6  | 1.18×        | **3.4×**          |
+| 100k python     | 488          | 495          | 8.2   | 6.19×        | 1×                |
+| 100k **static** | **94.5**     | 101          | 41.9  | 1.20×        | **5.2×**          |
+| 1M python       | 1450         | 1474         | 2.8   | 18.4×        | 1×                |
+| 1M **static**   | **94.1**     | 100          | 42.3  | 1.19×        | **15.4×**         |
+
+The STATIC p50 is **flat in catalog size** (93.0 / 94.5 / 94.1 ms) — the mask
+cost no longer scales with fan-out. Straggler flake: one ~350–500 ms request
+appeared in unconstrained round 3 and 100k-static round 3 (the known
+single-request flake, not backend-related).
+
+Microbench on the same box (per request per call, beam 256):
+
+| catalog | step-1 python | step-1 static | speedup  | initial python | initial static |
+| ------- | ------------- | ------------- | -------- | -------------- | -------------- |
+| 10k     | 6.2 ms        | 0.57 ms       | 11×      | 50.5 ms        | 0.01 ms        |
+| 100k    | 25.6 ms       | 0.59 ms       | 43×      | 65.9 ms        | 0.01 ms        |
+| 1M      | 266.2 ms      | **0.65 ms**   | **410×** | 68.3 ms        | 0.01 ms        |
+
+Static step-2 masks are 0.38–0.40 ms. Per request the mask work is now
+~1.1 ms (vs ~340 ms python at 1M); ×4 batch-serialized requests ≈ 4 ms of the
++15 ms E2E delta over unconstrained. The residual ~11 ms is size-independent
+constrained-path engine work outside the provider: stacking per-request masks
+to `[B, W, vocab]`, the `batched_item_mask_limited_beam_width` count+`.item()`
+sync per step, `masked_fill` over scores, and per-beam host-side completion
+checks and item resolution at response time. Tightening that residual would
+need engine-level changes (e.g. STATIC's candidate-gather top-k over W×K
+instead of masking the full vocab) — not required at this operating point.
+
+Remaining startup cost: the CSR build adds only ~0.1–0.6 s, but the inherited
+dict-trie build (used for response-time item resolution) still costs ~9 s at
+1M items, so server start and `/catalog/reload` latency are unchanged — the
+precompiled-artifact argument above stands.
 
 ## Caveats
 
