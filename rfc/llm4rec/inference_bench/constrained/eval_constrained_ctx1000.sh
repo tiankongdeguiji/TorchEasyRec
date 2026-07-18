@@ -8,6 +8,11 @@ set -uxo pipefail
 BASE=${BASE:-/mnt/data/hongsheng.jhs}
 SIDGR=${SIDGR:-$BASE/recsys-examples/examples/sid-gr-inference}
 MODEL_DIR=${MODEL_DIR:-$BASE/models/Qwen3-0.6B}
+export GR_DECODE_ATTEN_ROOT=${GR_DECODE_ATTEN_ROOT:-$BASE/recsys-examples/corelib/gr_decode_atten}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+# hub blocked on the pod; bench_serving's "random" dataset needs ShareGPT once
+export HF_ENDPOINT=https://hf-mirror.com
+unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULTS=${RESULTS:-$BASE/bench_results/constrained_ctx1000_$(date +%Y%m%d_%H%M%S)}
 CATALOG_SIZES=${CATALOG_SIZES:-"10000 100000 1000000"}
