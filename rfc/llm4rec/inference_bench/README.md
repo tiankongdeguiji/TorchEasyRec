@@ -12,6 +12,7 @@ Feeds RFC section 10 (`rfc/llm4rec/index.html`).
 | Local 1x A10 23GB (SM86)                                                     | docker `sidgr-bench:cu13` (lmsysorg/sglang:dev-cu13 + cuda-compat-13 on r535) | done - see `results/` and `experiments/llm4rec/rfc_research/serving-sidgr-bench-repro-a10.md` |
 | `tianyi_l20n_llm4rec_serve` 72GB SM120 (RTX PRO 5000 Blackwell, driver r580) | native host env (the machine is the dev-cu13 image; no compat)                | this directory                                                                                |
 | `ty_l20n_dev` 72GB SM120 (RTX PRO 5000 Blackwell, driver r580)               | DSW Docker-in-Docker using ACR `tzrec-test:sglang-dev-cu13`                   | `results/qwen3-0.6b-dind-reproduction-20260729.md`                                            |
+| `ty_l20n_dev` Qwen3 fusion ablation                                          | pinned DSW Docker-in-Docker image digest, current vs strict-unfused model     | `results/qwen3-0.6b-fused-vs-unfused-ctx1000.md`                                              |
 
 ## Code topology (all code flows local -> ty_git -> remote pull; never edit remote in place)
 
@@ -19,6 +20,7 @@ Feeds RFC section 10 (`rfc/llm4rec/index.html`).
 | ------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | tiankongdeguiji/sglang          | `llm4rec/beam-search-bench`   | pin of cswuyg/sglang `feature/beam_search` @ 2aac32adcf (upstream PR #15645)                                                                     |
 | tiankongdeguiji/recsys-examples | `llm4rec/sidgr-bench`         | base 5dc46a2 + env-gated SGLang knobs (`SGLANG_MEM_FRACTION_STATIC` / `SGLANG_MAX_RUNNING_REQUESTS` / `SGLANG_CONTEXT_LENGTH`), inert by default |
+| tiankongdeguiji/recsys-examples | `llm4rec/qwen3-fusion-bench`  | validated Qwen3 fusion policy and strict-off ablation gates @ f8b71ff                                                                            |
 | tiankongdeguiji/TorchEasyRec    | `rfc_llm4rec_inference_bench` | this directory                                                                                                                                   |
 
 Remote checkouts live under `/mnt/data/hongsheng.jhs/{sglang,recsys-examples,TorchEasyRec}`.
@@ -73,3 +75,11 @@ the Qwen3-0.6B context-1000 benchmark through the Docker-in-Docker service on
 `ty_l20n_dev`. All offline values are within 2.2% of the earlier SM120 run;
 online clean-round medians are GR 49.15 req/s at 80.35ms p50 and SGLang
 33.83 req/s at 116.19ms p50.
+
+`results/qwen3-0.6b-fused-vs-unfused-ctx1000.md` compares the current
+auto-fused Qwen3 model with a strict-unfused layer path on the same pinned
+SM120 runtime. Fusion improves offline latency by 1.19-1.26x and online
+throughput by 1.15x; RoPE accounts for 71.7% of the strict gap. Nsight verifies
+all four fused dispatches and attributes 90.7% of the trace delta to additional
+GPU-busy time. The run also identifies a repeatable generation-2 Python GC
+tail event in the allocation-heavy strict path.

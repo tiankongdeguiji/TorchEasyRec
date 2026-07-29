@@ -1,0 +1,4 @@
+mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-test@sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353: Pulling from easyrec/tzrec-test
+Digest: sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353
+Status: Image is up to date for mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-test@sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353
+mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-test@sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353

@@ -1,0 +1,149 @@
+{
+  "fused": {
+    "categories": {
+      "attention_decode": {
+        "launches": 56,
+        "percent_kernel_time": 7.935472018375715,
+        "time_ms": 4.6127329999999995
+      },
+      "attention_prefill": {
+        "launches": 28,
+        "percent_kernel_time": 6.616287293995874,
+        "time_ms": 3.845916999999999
+      },
+      "beam_topk": {
+        "launches": 101,
+        "percent_kernel_time": 10.896381251431857,
+        "time_ms": 6.3338509999999975
+      },
+      "elementwise_other": {
+        "launches": 86,
+        "percent_kernel_time": 11.2613102289751,
+        "time_ms": 6.545976999999999
+      },
+      "gemm": {
+        "launches": 339,
+        "percent_kernel_time": 50.680705242633096,
+        "time_ms": 29.459691999999972
+      },
+      "kv_layout": {
+        "launches": 28,
+        "percent_kernel_time": 2.2876384424772196,
+        "time_ms": 1.329759
+      },
+      "layout_copy": {
+        "launches": 200,
+        "percent_kernel_time": 5.868864661025895,
+        "time_ms": 3.411455000000004
+      },
+      "mlp_activation": {
+        "launches": 84,
+        "percent_kernel_time": 1.1794104884661227,
+        "time_ms": 0.6855680000000002
+      },
+      "norm": {
+        "launches": 255,
+        "percent_kernel_time": 2.396255589150178,
+        "time_ms": 1.392896000000001
+      },
+      "rope": {
+        "launches": 84,
+        "percent_kernel_time": 0.8776747834688958,
+        "time_ms": 0.5101749999999999
+      }
+    },
+    "dispatch_evidence": {
+      "add_rmsnorm": 111,
+      "mlp": 84,
+      "qk_norm": 84,
+      "rope": 84
+    },
+    "explicit_memory": {
+      "memcpy": {
+        "operations": 26,
+        "time_ms": 0.013536
+      },
+      "memset": {
+        "operations": 122,
+        "time_ms": 0.048384
+      }
+    },
+    "gpu_busy_union_ms": 58.189943,
+    "kernel_launches": 1261,
+    "kernel_time_ms": 58.128023,
+    "source": "fused.sqlite",
+    "trace_span_ms": 61.836501,
+    "uncovered_gap_ms": 3.646557999999999
+  },
+  "unfused": {
+    "categories": {
+      "attention_decode": {
+        "launches": 56,
+        "percent_kernel_time": 6.811057046734651,
+        "time_ms": 4.651004000000001
+      },
+      "attention_prefill": {
+        "launches": 28,
+        "percent_kernel_time": 5.727102632715113,
+        "time_ms": 3.9108140000000002
+      },
+      "beam_topk": {
+        "launches": 101,
+        "percent_kernel_time": 9.259393444186765,
+        "time_ms": 6.322876999999998
+      },
+      "elementwise_other": {
+        "launches": 1541,
+        "percent_kernel_time": 18.47656305716886,
+        "time_ms": 12.616921000000033
+      },
+      "gemm": {
+        "launches": 339,
+        "percent_kernel_time": 42.99251932480178,
+        "time_ms": 29.357906999999987
+      },
+      "kv_layout": {
+        "launches": 28,
+        "percent_kernel_time": 0.4663673631180069,
+        "time_ms": 0.3184639999999999
+      },
+      "layout_copy": {
+        "launches": 872,
+        "percent_kernel_time": 10.867362400437695,
+        "time_ms": 7.420896000000052
+      },
+      "mlp_activation": {
+        "launches": 168,
+        "percent_kernel_time": 3.7081641321872887,
+        "time_ms": 2.53216
+      },
+      "norm": {
+        "launches": 339,
+        "percent_kernel_time": 1.691470598649956,
+        "time_ms": 1.155039
+      }
+    },
+    "dispatch_evidence": {
+      "add_rmsnorm": 0,
+      "mlp": 0,
+      "qk_norm": 0,
+      "rope": 0
+    },
+    "explicit_memory": {
+      "memcpy": {
+        "operations": 26,
+        "time_ms": 0.014464
+      },
+      "memset": {
+        "operations": 122,
+        "time_ms": 0.075264
+      }
+    },
+    "gpu_busy_union_ms": 68.37581,
+    "kernel_launches": 3472,
+    "kernel_time_ms": 68.286082,
+    "source": "unfused.sqlite",
+    "trace_span_ms": 73.06371,
+    "uncovered_gap_ms": 4.687899999999999
+  }
+}

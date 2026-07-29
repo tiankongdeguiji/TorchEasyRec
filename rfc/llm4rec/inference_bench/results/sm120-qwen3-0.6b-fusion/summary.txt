@@ -1,0 +1,16 @@
+OFFLINE
+b=1 fused_ms=19.479 unfused_ms=24.412 latency_speedup=1.2532 fused_qps=51.337 unfused_qps=40.963
+b=2 fused_ms=34.132 unfused_ms=40.889 latency_speedup=1.1979 fused_qps=58.596 unfused_qps=48.913
+b=4 fused_ms=61.687 unfused_ms=73.434 latency_speedup=1.1904 fused_qps=64.844 unfused_qps=54.471
+b=8 fused_ms=114.797 unfused_ms=145.136 latency_speedup=1.2643 fused_qps=69.688 unfused_qps=55.121
+CORRECTNESS top1_exact=1.000000 top256_overlap=0.964844
+ONLINE
+fused {"p50": 79.75186198018491, "p90": 83.42255341704004, "p99": 85.83763298753183, "req_s": 49.776230644967356}
+unfused {"p50": 91.4191585034132, "p90": 95.86997097358108, "p99": 97.89190997835249, "req_s": 43.32287220385754}
+ONLINE_RATIOS latency_speedup=1.1463 throughput_speedup=1.1490
+ABLATIONS
+no_qk_norm wall_ms=62.052
+no_rope wall_ms=70.108
+no_add_rmsnorm wall_ms=61.947
+no_mlp wall_ms=63.494
+max_fused wall_ms=61.753

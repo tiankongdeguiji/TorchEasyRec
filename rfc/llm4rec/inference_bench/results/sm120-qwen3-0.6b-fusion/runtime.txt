@@ -1,0 +1,8 @@
+python 3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]
+torch 2.11.0+cu130 cuda 13.0
+flashinfer-python 0.6.12
+nvidia-cutlass-dsl 4.5.2
+quack-kernels 0.5.0
+transformers 5.12.1
+sglang-kernel 0.4.4
+device NVIDIA RTX PRO 5000 72GB Blackwell (12, 0)
