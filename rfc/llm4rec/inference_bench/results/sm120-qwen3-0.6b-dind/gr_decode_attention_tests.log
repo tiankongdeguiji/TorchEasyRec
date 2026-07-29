@@ -1,0 +1,15 @@
+..
+=============================== warnings summary ===============================
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+tests/test_real_decode_attention_smoke.py::test_real_decode_attention_backend_smoke
+  /usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/base_dsl/_mlir_helpers/op.py:121: DeprecationWarning: `make_fragment` is deprecated, use `make_rmem_tensor` instead
+    res_or_list = opFunc(*args, **kwargs, loc=loc)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

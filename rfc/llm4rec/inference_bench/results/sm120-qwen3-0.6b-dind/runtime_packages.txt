@@ -1,0 +1,25 @@
+python 3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]
+torch 2.11.0+cu130 /usr/local/lib/python3.12/dist-packages/torch/__init__.py
+sglang 0.0.0.dev1+g70df09b83 /mnt/data/hongsheng.jhs/sglang/python/sglang/__init__.py
+flashinfer 0.6.12 /usr/local/lib/python3.12/dist-packages/flashinfer/__init__.py
+flash_attn unknown None
+cutlass 4.5.2 /usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/__init__.py
+quack 0.5.0 /usr/local/lib/python3.12/dist-packages/quack/__init__.py
+transformers 5.12.1 /usr/local/lib/python3.12/dist-packages/transformers/__init__.py
+tvm_ffi 0.1.11 /usr/local/lib/python3.12/dist-packages/tvm_ffi/__init__.py
+cuda.bindings.driver unknown /usr/local/lib/python3.12/dist-packages/cuda/bindings/driver.cpython-312-x86_64-linux-gnu.so
+dist sglang 0.0.0.dev1+g70df09b83
+dist sglang-kernel 0.4.4
+dist flashinfer-python 0.6.12
+dist flashinfer-cubin 0.6.12
+dist flash-attn-4 4.0.0b15
+dist nvidia-cutlass-dsl 4.5.2
+dist quack-kernels 0.5.0
+dist transformers 5.12.1
+dist apache-tvm-ffi 0.1.11
+dist cuda-tile 1.3.0
+dist torch-c-dlpack-ext 0.1.5
+torch_cuda 13.0
+cuda_count 1
+cuda_name NVIDIA RTX PRO 5000 72GB Blackwell
+cuda_capability (12, 0)

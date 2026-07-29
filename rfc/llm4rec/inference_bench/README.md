@@ -11,6 +11,7 @@ Feeds RFC section 10 (`rfc/llm4rec/index.html`).
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Local 1x A10 23GB (SM86)                                                     | docker `sidgr-bench:cu13` (lmsysorg/sglang:dev-cu13 + cuda-compat-13 on r535) | done - see `results/` and `experiments/llm4rec/rfc_research/serving-sidgr-bench-repro-a10.md` |
 | `tianyi_l20n_llm4rec_serve` 72GB SM120 (RTX PRO 5000 Blackwell, driver r580) | native host env (the machine is the dev-cu13 image; no compat)                | this directory                                                                                |
+| `ty_l20n_dev` 72GB SM120 (RTX PRO 5000 Blackwell, driver r580)               | DSW Docker-in-Docker using ACR `tzrec-test:sglang-dev-cu13`                   | `results/qwen3-0.6b-dind-reproduction-20260729.md`                                            |
 
 ## Code topology (all code flows local -> ty_git -> remote pull; never edit remote in place)
 
@@ -66,3 +67,9 @@ STATIC CSR backend (`--catalog-mask-backend static`, recsys-examples
 `llm4rec/sidgr-bench`) is catalog-size-independent at p50 ~94ms (1.19x
 unconstrained; 15.4x over the python walk at 1M, step-mask 410x). Harness
 under `constrained/`.
+
+`results/qwen3-0.6b-dind-reproduction-20260729.md` independently reproduces
+the Qwen3-0.6B context-1000 benchmark through the Docker-in-Docker service on
+`ty_l20n_dev`. All offline values are within 2.2% of the earlier SM120 run;
+online clean-round medians are GR 49.15 req/s at 80.35ms p50 and SGLang
+33.83 req/s at 116.19ms p50.

@@ -112,3 +112,31 @@ fixed overheads (CUDA-graphed decode, no scheduler round-trips) dominate the
 comparison; upstream's own primary validation target is Qwen3-0.6B. The remaining
 1.7B gap on SM120 is therefore mostly arch/tuning of the larger GEMMs, not harness
 or config differences.
+
+## Qwen3-0.6B Docker-in-Docker reproduction
+
+The context-1000 cases were repeated on `ty_l20n_dev`: the outer DSW pod uses
+TorchEasyRec 1.3.0 (Torch 2.12.1/cu130), while the nested benchmark container is
+ACR `tzrec-test:sglang-dev-cu13` at digest
+`sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353`.
+The inner runtime is the same Torch 2.11/cu130 stack used by the original SM120
+run.
+
+| Batch | Earlier GR ms | DinD GR ms | GR delta | Earlier SGLang ms | DinD SGLang ms | SGLang delta |
+| ----: | ------------: | ---------: | -------: | ----------------: | -------------: | -----------: |
+|     1 |        19.456 |     19.521 |   +0.34% |            35.832 |         36.607 |       +2.16% |
+|     2 |        33.915 |     34.174 |   +0.76% |            61.189 |         60.798 |       -0.64% |
+|     4 |        61.351 |     61.898 |   +0.89% |           110.592 |        111.166 |       +0.52% |
+|     8 |       114.020 |    114.843 |   +0.72% |           217.342 |        215.809 |       -0.71% |
+
+Online at context 1000, beam 256, max concurrency 4, and 64 requests:
+
+| Engine |  Req/s | p50 ms | p90 ms | p99 ms |
+| ------ | -----: | -----: | -----: | -----: |
+| GR     | 49.145 |  80.35 |  84.55 |  90.80 |
+| SGLang | 33.827 | 116.19 | 118.57 | 121.02 |
+
+The online p50 ratio is 1.446x and throughput ratio is 1.453x. A fourth GR
+round was taken because round 3 contained one 372ms host/scheduler straggler;
+the outlier is retained in the raw JSONL and disclosed in
+`qwen3-0.6b-dind-reproduction-20260729.md`.

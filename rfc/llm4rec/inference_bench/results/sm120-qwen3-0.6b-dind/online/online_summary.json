@@ -1,0 +1,35 @@
+{
+  "gr": {
+    "selected_rounds": [
+      1,
+      2,
+      4
+    ],
+    "all_rounds": 4,
+    "req_s_median": 49.14496137185428,
+    "p50_ms_median": 80.3517464955803,
+    "p90_ms_median": 84.55293661681935,
+    "p99_ms_median": 90.79678012989461
+  },
+  "sglang": {
+    "selected_rounds": [
+      1,
+      2,
+      3
+    ],
+    "all_rounds": 3,
+    "req_s_median": 33.82674086986194,
+    "p50_ms_median": 116.19349851389416,
+    "p90_ms_median": 118.57453802949749,
+    "p99_ms_median": 121.018413543934
+  },
+  "gr_round3_outlier": {
+    "req_s": 40.561588347667396,
+    "p50_ms": 79.47095250710845,
+    "p99_ms": 372.12557419668883
+  },
+  "ratios": {
+    "latency_p50_sglang_over_gr": 1.446060646862048,
+    "throughput_gr_over_sglang": 1.4528435228485213
+  }
+}

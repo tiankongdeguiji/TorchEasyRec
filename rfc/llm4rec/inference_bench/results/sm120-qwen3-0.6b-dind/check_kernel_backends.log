@@ -1,0 +1,23 @@
+Kernel backend availability
+========================================================================
+flash_attn: available [prefill_attention]
+flashinfer: available [fused_add_rmsnorm, qk_norm_rope, rmsnorm, rope, rope_with_cache, sampling_topk]
+gr_decode_atten: available [gr_decode_attention]
+sgl_kernel: available [fused_mlp]
+torch: available [fused_mlp, packed_gemm, prefill_attention, qk_norm_rope, rmsnorm, rope]
+torch_compile: available [fused_mlp]
+trtllm_aligned: available [fused_mlp, packed_gemm, qk_norm_rope]
+  missing: tokenspeed-trtllm-kernel, tensorrt_llm, torch.ops.trtllm.fused_qk_norm_rope, torch.ops.trtllm.gated_mlp, torch.ops.trtllm.cublas_mm
+  details: tokenspeed_trtllm_kernel module=missing, loaded_package=gr_inference_trtllm_kernels
+
+Kernel backend selection
+========================================================================
+rmsnorm: flashinfer
+fused_add_rmsnorm: flashinfer
+rope: flashinfer
+qk_norm_rope: flashinfer
+prefill_attention: flash_attn
+gr_decode_attention: gr_decode_atten
+packed_gemm: torch
+fused_mlp: trtllm_aligned
+sampling_topk: flashinfer

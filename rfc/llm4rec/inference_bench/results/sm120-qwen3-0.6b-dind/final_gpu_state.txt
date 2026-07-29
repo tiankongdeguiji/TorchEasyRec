@@ -1,0 +1,4 @@
+0, NVIDIA RTX PRO 5000 72GB Blackwell, 0 MiB, 0 %, 32, P8
+1, NVIDIA RTX PRO 5000 72GB Blackwell, 0 MiB, 0 %, 26, P8
+2, NVIDIA RTX PRO 5000 72GB Blackwell, 0 MiB, 0 %, 27, P8
+3, NVIDIA RTX PRO 5000 72GB Blackwell, 0 MiB, 0 %, 27, P8

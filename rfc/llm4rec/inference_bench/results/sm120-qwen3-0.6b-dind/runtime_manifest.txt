@@ -1,0 +1,5 @@
+image=mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-test:sglang-dev-cu13
+image_id=sha256:8c77349eb73ff953a9256e84ce84a243396bb1c7506cf401e34d9d1a0e33e469 repo_digests=["mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-test@sha256:c1cf5a01e53113707f6fc67f4cdc8e223c9d3fe3cf2b5a9c657084c45e213353"] created=2026-07-02T01:32:17.399062103Z size=29404498291
+container=6e93c4216a3c0827d2a9fa9c5e100bb36a1613230ca2869c511f2ced36bce3d3
+recsys_commit=f7d61a245a7c045c2d617dbd95d6b3f4f8a44226
+sglang_commit=2aac32adcf839bfd3f8d02d6cc4a840d9d82b6a9
