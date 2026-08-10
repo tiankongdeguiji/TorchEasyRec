@@ -82,4 +82,6 @@ SM120 runtime. Fusion improves offline latency by 1.19-1.26x and online
 throughput by 1.15x; RoPE accounts for 71.7% of the strict gap. Nsight verifies
 all four fused dispatches and attributes 90.7% of the trace delta to additional
 GPU-busy time. The run also identifies a repeatable generation-2 Python GC
-tail event in the allocation-heavy strict path.
+tail event in the allocation-heavy strict path. Use `fusion/RUNBOOK.md` for
+source synchronization, DSW launch, monitoring, acceptance, recovery, and
+publication procedures.
