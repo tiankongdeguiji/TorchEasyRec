@@ -11,13 +11,13 @@
 
 import os
 import re
-from typing import Any, Dict, List, Type
+from typing import Any, Dict, List, Optional, Type, Union
 
 import numpy as np
 from google.protobuf import json_format, text_format
 from google.protobuf.message import Message
 
-from tzrec.protos import data_pb2, pipeline_pb2
+from tzrec.protos import data_pb2, eval_pb2, export_pb2, pipeline_pb2, train_pb2
 from tzrec.protos.data_pb2 import FgMode
 from tzrec.utils.logging_util import logger
 
@@ -73,6 +73,44 @@ def config_to_kwargs(config: Message) -> Dict[str, Any]:
 def which_msg(config: Message, oneof_group: str) -> str:
     """Returns the name of the message that is set inside a oneof group."""
     return getattr(config, config.WhichOneof(oneof_group)).__class__.__name__
+
+
+def use_dense_ema(
+    config: Optional[Union[eval_pb2.EvalConfig, export_pb2.ExportConfig]],
+    train_config: train_pb2.TrainConfig,
+) -> bool:
+    """Resolve whether evaluation or export should use Dense EMA parameters.
+
+    Args:
+        config: EvalConfig or ExportConfig containing the optional override,
+            or None to use the training default.
+        train_config: Training configuration providing the default.
+    """
+    if config is not None and config.HasField("use_dense_ema"):
+        return bool(config.use_dense_ema)
+    return train_config.dense_optimizer.HasField("ema")
+
+
+def get_inference_batch_size(data_config: data_pb2.DataConfig) -> int:
+    """Get the effective batch size for a non-training dataloader.
+
+    Args:
+        data_config: Data configuration containing batch-size settings.
+    """
+    if data_config.HasField("eval_batch_size"):
+        return data_config.eval_batch_size
+    return data_config.batch_size
+
+
+def set_inference_batch_size(data_config: data_pb2.DataConfig, batch_size: int) -> None:
+    """Set and synchronize the batch size used by inference paths.
+
+    Args:
+        data_config: Data configuration containing batch-size settings.
+        batch_size: Batch size to use for non-training dataloaders.
+    """
+    data_config.batch_size = batch_size
+    data_config.eval_batch_size = batch_size
 
 
 def _get_compatible_fg_mode(data_config: data_pb2.DataConfig) -> FgMode:

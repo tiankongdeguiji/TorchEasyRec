@@ -106,8 +106,13 @@ data_config {
   - `kafka://broker:9092/topic?group.id=consumer_group&auto.offset.reset=earliest`
   - 需以`&`分隔符来分隔kafka的参数，`group.id`是必选参数，其余参数参考[Kafka配置文档](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md)
   - `enable.auto.commit`默认设置为`false`，KafkaDataset使用自身的checkpoint机制管理消费位点，不依赖Kafka broker端的offset提交。如需启用自动提交，可在URI中显式设置`enable.auto.commit=true`
-  - 支持`start.timestamp.ms`参数，指定从某个时间戳（毫秒）开始消费，消费者会从各分区中时间戳 >= 该值的最早offset开始读取。当同时存在checkpoint时，checkpoint优先级更高。示例:
-    - `kafka://broker:9092/topic?group.id=consumer_group&auto.offset.reset=earliest&start.timestamp.ms=1711929600000`
+  - 支持`start.timestamp.ms`参数，指定从某个时间戳（毫秒）开始消费，消费者会从各分区中时间戳 >= 该值的最早offset开始读取。当同时存在checkpoint时，checkpoint优先级更高
+    - 示例:
+      - `kafka://broker:9092/topic?group.id=consumer_group&auto.offset.reset=earliest&start.timestamp.ms=1711929600000`
+    - 使用`start.timestamp.ms`时，时间戳到offset的解析（`offsets_for_times`）会分批请求并带重试，可通过如下环境变量调优，避免分区较多时单次请求超时：
+      - `TZREC_KAFKA_OFFSETS_FOR_TIMES_BATCH_SIZE`: 每次`offsets_for_times`请求解析的分区数，默认`32`
+      - `TZREC_KAFKA_OFFSETS_FOR_TIMES_TIMEOUT`: 每次`offsets_for_times`请求的超时时间（秒），默认`30.0`
+      - `TZREC_KAFKA_OFFSETS_FOR_TIMES_RETRIES`: 每批请求失败后的重试次数，默认`2`
 
 - 注意:
 
@@ -329,6 +334,12 @@ pipeline.global-job-parameters: |
 
 - 每个`proc`上的读数据并发度，`nproc-per-node * num_workers`建议小于单机CPU核数
 - 如果`num_workers==0`，数据进程和训练进程将会在一个进程中，便于调试
+
+### in_order
+
+- 是否按dataloader任务提交顺序返回batch，默认为true；仅在`num_workers > 0`时生效
+- 设置为false时，先处理完的worker可以先返回batch，避免慢worker阻塞其他worker，但可能降低可复现性，并改变训练样本或预测结果的输出顺序
+- 对于样本分布不均衡的数据，设置为false可能使训练过程看到的数据分布产生偏差
 
 ### shuffle
 
