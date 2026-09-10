@@ -194,7 +194,7 @@ class ParquetReader(BaseReader):
         self._ordered_cols = None
         self._input_files = []
         for input_path in self._input_path.split(","):
-            self._input_files.extend(glob.glob(input_path))
+            self._input_files.extend(sorted(glob.glob(input_path)))
         if len(self._input_files) == 0:
             raise RuntimeError(f"No parquet files exist in {self._input_path}.")
 

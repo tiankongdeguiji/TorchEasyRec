@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import pyarrow as pa
@@ -381,6 +382,26 @@ class ParquetReaderTest(unittest.TestCase):
     def tearDown(self):
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
+
+    def test_input_files_are_sorted(self):
+        input_files = [
+            os.path.join(self.test_dir, "part-1.parquet"),
+            os.path.join(self.test_dir, "part-0.parquet"),
+        ]
+        table = pa.table({"id_a": [1]})
+        for input_file in input_files:
+            parquet.write_table(table, input_file)
+
+        with mock.patch(
+            "tzrec.datasets.parquet_dataset.glob.glob", return_value=input_files
+        ):
+            reader = ParquetReader(
+                os.path.join(self.test_dir, "*.parquet"),
+                batch_size=1,
+                rebalance=False,
+            )
+
+        self.assertEqual(reader._input_files, sorted(input_files))
 
     @parameterized.expand([[True], [False]])
     def test_parquet_reader(self, rebalance):
