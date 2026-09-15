@@ -386,12 +386,28 @@ class CompilePromptTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same vocab_pad_to_multiple_of"):
             self._compile(cfg, [_feature(_HIST)])
 
-    def test_sid_token_prefixes_must_be_globally_unique(self) -> None:
+    def test_sid_fields_can_share_one_token_vocabulary(self) -> None:
         cfg = self._config(prompt="History : {{hist}}")
-        self._add_sid_space(cfg, "hist", token_format="<|shared_{i}|>")
-        self._add_sid_space(cfg, "answer", token_format="<|shared_{i}|>")
+        self._add_sid_space(cfg, "hist", (4, 4, 4), "<|shared_{i}|>", padding=0)
+        self._add_sid_space(cfg, "answer", (4, 4, 4), "<|shared_{i}|>", padding=0)
+        directory = os.path.join(self.test_dir, "shared")
+        compiled = compile_prompt(cfg, [_feature(_HIST)], ["answer"], directory)
+        history, target = compiled.sid_spaces
+        base = Tokenizer.from_file(self.tok_path).get_vocab_size(True)
+        self.assertEqual(history.base_vocab_size, base)
+        self.assertEqual(target.base_vocab_size, base)
+        self.assertEqual(history.band_lo, target.band_lo)
+        self.assertEqual(history.band_hi, target.band_hi)
+        self.assertEqual(compiled.target_vocab_size, base + 12)
+        extended = Tokenizer.from_file(os.path.join(directory, "tokenizer.json"))
+        self.assertEqual(extended.get_vocab_size(True), base + 12)
+        self.assertEqual(extended.token_to_id("<|shared_0|>"), base)
 
-        with self.assertRaisesRegex(ValueError, "already exist in the tokenizer"):
+    def test_shared_sid_prefix_requires_identical_level_sizes(self) -> None:
+        cfg = self._config(prompt="History : {{hist}}")
+        self._add_sid_space(cfg, "hist", (4, 8), "<|shared_{i}|>")
+        self._add_sid_space(cfg, "answer", (8, 4), "<|shared_{i}|>")
+        with self.assertRaisesRegex(ValueError, "identical codebooks"):
             self._compile(cfg, [_feature(_HIST)])
 
     def test_response_contains_one_sid_label_placeholder(self) -> None:

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from tokenizers import Tokenizer
@@ -186,6 +187,7 @@ def _build_sid_spaces(
         )
 
     resolved: List[ResolvedSidSpace] = []
+    spaces_by_format: Dict[str, ResolvedSidSpace] = {}
     for space in cfg.sid_space:
         codebook = [int(c) for c in space.codebook]
         if not codebook:
@@ -209,6 +211,17 @@ def _build_sid_spaces(
                     f"describes {declared}. The data and the decode bands would "
                     "disagree."
                 )
+
+        if space.token_format in spaces_by_format:
+            shared = spaces_by_format[space.token_format]
+            if tuple(codebook) != shared.codebook:
+                raise ValueError(
+                    "shared SID token_format requires identical codebooks."
+                )
+            resolved.append(
+                replace(shared, name=space.name, manifest_sha256=manifest_sha256)
+            )
+            continue
 
         sid_tokens = _render_sid_tokens(space)
         existing_sid_tokens = [
@@ -251,6 +264,8 @@ def _build_sid_spaces(
                 band_hi=tuple(hi),
             )
         )
+
+        spaces_by_format[space.token_format] = resolved[-1]
 
     return tuple(resolved), padding_multiples.pop()
 
