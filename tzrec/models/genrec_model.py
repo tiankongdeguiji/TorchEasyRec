@@ -83,6 +83,7 @@ class BaseGenRecModel(BaseModel):
         **kwargs: Any,
     ) -> None:
         super().__init__(model_config, features, labels, sample_weights, **kwargs)
+        self._sample_weight_name = sample_weights[0] if sample_weights else None
         if compiled_prompt is None:
             raise ValueError(
                 f"{type(self).__name__} needs a compiled prompt; call "
@@ -143,7 +144,9 @@ class BaseGenRecModel(BaseModel):
             lm_parameter_dtype: dtype of the LM parameters.
         """
         config = AutoConfig.from_pretrained(hf_model_name_or_path)
-        model = AutoModelForCausalLM.from_config(config)
+        model = AutoModelForCausalLM.from_config(
+            config, attn_implementation="flash_attention_2"
+        )
         self.lm = model.to(_PARAM_DTYPE[lm_parameter_dtype])
         self._check_backbone_interfaces(hf_model_name_or_path)
 
@@ -261,15 +264,31 @@ class BaseGenRecModel(BaseModel):
     def loss(
         self, predictions: Dict[str, torch.Tensor], batch: Batch
     ) -> Dict[str, torch.Tensor]:
-        """Score the response window with the backbone's own causal-LM loss.
+        """Score the response window with optional expanded-label row weights.
 
         Args:
             predictions: the response-window logits and labels.
-            batch: the batch, unused.
+            batch: carries globally normalized inverse-label-count weights.
 
         Returns:
             The named loss.
         """
+        if self._sample_weight_name is not None:
+            logits = predictions["logits"].float()
+            labels = nn.functional.pad(
+                predictions["labels"], (0, 1), value=self._ignore_index
+            )[..., 1:].contiguous()
+            token_loss = nn.functional.cross_entropy(
+                logits.reshape(-1, self.lm.config.vocab_size),
+                labels.reshape(-1),
+                ignore_index=self._ignore_index,
+                reduction="none",
+            ).view_as(labels)
+            row_loss = token_loss.sum(dim=-1) / labels.ne(self._ignore_index).sum(
+                dim=-1
+            )
+            weights = batch.sample_weights[self._sample_weight_name].reshape(-1)
+            return {"ce_loss": (row_loss * weights).mean()}
         return {
             "ce_loss": self.lm.loss_function(
                 logits=predictions["logits"],

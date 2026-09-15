@@ -20,7 +20,7 @@ forward has no ``logits_to_keep``, or which returns a legacy tuple cache, is
 not supported; Qwen2.5/Qwen3 are what CI covers.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import torch
 
@@ -143,17 +143,40 @@ class GenRecCausalLMModel(BaseGenRecModel):
             Logits and labels over the same window, so the shift ``loss``
             applies lands on the pairs the window was sized for.
         """
-        padded, mask, labels = self._left_pad_packed_inputs(
-            embeds, batch, build_labels=True
+        infos = batch.additional_infos
+        cu_seqlens = infos[CU_SEQLENS]
+        starts = cu_seqlens[:-1]
+        lengths = torch.diff(cu_seqlens)
+        row_starts = torch.repeat_interleave(
+            starts, lengths, output_size=embeds.shape[0]
         )
-        suffix = self._prompt.prompt_plan.logits_suffix_len
+        position_ids = (
+            torch.arange(embeds.shape[0], device=embeds.device) - row_starts
+        ).unsqueeze(0)
+        suffix = cast(int, self._prompt.prompt_plan.logits_suffix_len)
+        suffix_offsets = torch.arange(-suffix, 0, device=embeds.device)
+        keep_indices = (cu_seqlens[1:, None] + suffix_offsets).reshape(-1)
+        flash_cu_seqlens = cu_seqlens.to(dtype=torch.int32).contiguous()
+        max_seqlen = int(infos[MAX_SEQLEN])
         outputs = self.lm(
-            inputs_embeds=padded,
-            attention_mask=mask,
+            inputs_embeds=embeds.unsqueeze(0),
+            attention_mask=None,
+            position_ids=position_ids,
             use_cache=False,
-            logits_to_keep=suffix,
+            logits_to_keep=keep_indices,
+            cu_seq_lens_q=flash_cu_seqlens,
+            cu_seq_lens_k=flash_cu_seqlens,
+            max_length_q=max_seqlen,
+            max_length_k=max_seqlen,
         )
-        return outputs.logits, labels[:, -suffix:]
+        logits = outputs.logits.reshape(lengths.numel(), suffix, -1)
+        window_ids = infos[INPUT_IDS][keep_indices].reshape(lengths.numel(), suffix)
+        columns = torch.arange(suffix, device=embeds.device)
+        labels = window_ids.masked_fill(
+            columns[None, :] < suffix - infos[RESPONSE_LENGTHS][:, None],
+            self._ignore_index,
+        )
+        return logits, labels
 
     def _generate(self, embeds: torch.Tensor, batch: Batch) -> torch.Tensor:
         """Beam-search the SID answer.
@@ -223,11 +246,10 @@ class GenRecCausalLMModel(BaseGenRecModel):
 def _fx_wrapped_forward(
     model: "GenRecCausalLMModel", embeds: torch.Tensor, batch: Batch
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Hide the padded forward from FX.
+    """Hide the packed forward from FX.
 
     ``TrainPipelineSparseDist`` symbolically traces the model whenever a
-    sharded module exists, and ``_left_pad_packed_inputs`` reads
-    ``max_seqlen`` as a host int.
+    sharded module exists, and the LM call reads ``max_seqlen`` as a host int.
 
     Args:
         model: the model whose response window to compute.
