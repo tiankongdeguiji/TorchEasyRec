@@ -38,7 +38,7 @@ from tzrec.prompt.assembler import (
     HOLE_SLOT_COUNTS,
     INPUT_IDS,
 )
-from tzrec.prompt.hole_keys import HOLE_KEYS
+from tzrec.prompt.slot_keys import SLOT_KEYS
 from tzrec.prompt.types import CompiledPrompt, PromptPlan
 from tzrec.protos.model_pb2 import FeatureGroupConfig, ModelConfig
 from tzrec.protos.models.genrec_model_pb2 import GenRecModelConfig
@@ -352,7 +352,7 @@ class GenRecFrontEnd(nn.Module):
     projected slot embeddings; an LLM engine gathers the LM's own table, scatters
     ``slot_embeds`` at ``hole_positions`` and decodes.
 
-    The walk and the ``hole_keys`` fold both read the parsed feature dict, so
+    The walk and the ``slot_keys`` fold both read the parsed feature dict, so
     under distributed embedding the dense stage must still receive every slot
     member's raw ``.values`` / ``.lengths`` / ``.key_lengths`` beside the
     looked-up embeddings.
@@ -405,7 +405,7 @@ class GenRecFrontEnd(nn.Module):
             INPUT_IDS: infos[INPUT_IDS],
             CU_SEQLENS: infos[CU_SEQLENS],
             HOLE_POSITIONS: infos[HOLE_POSITIONS],
-            HOLE_KEYS: infos[HOLE_KEYS],
+            SLOT_KEYS: infos[SLOT_KEYS],
             HOLE_SLOT_COUNTS: infos[HOLE_SLOT_COUNTS],
         }
         if self._prompt.prompt_plan.projected_slots:

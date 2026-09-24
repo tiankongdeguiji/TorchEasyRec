@@ -31,7 +31,7 @@ from tzrec.features.feature import BaseFeature
 from tzrec.loss.pe_mtl_loss import ParetoEfficientMultiTaskLoss
 from tzrec.modules.utils import BaseModule
 from tzrec.prompt.assembler import OUTPUT_KEYS, PromptAssembler
-from tzrec.prompt.hole_keys import HOLE_KEYS, HoleKeyBuilder
+from tzrec.prompt.slot_keys import SLOT_KEYS, SlotKeyBuilder
 from tzrec.protos.loss_pb2 import LossConfig
 from tzrec.protos.model_pb2 import FeatureGroupConfig, ModelConfig
 from tzrec.utils import config_util
@@ -394,7 +394,7 @@ class ScriptWrapper(BaseModule):
     Parses a request dict into a ``Batch`` and runs the wrapped module's
     ``predict``. A module that also exposes ``compiled_prompt`` has its prompt
     assembled here by the same walk the training collator runs, with the
-    serving-only ``hole_keys`` fold beside it, which training never computes.
+    serving-only ``slot_keys`` fold beside it, which training never computes.
     """
 
     def __init__(self, module: nn.Module) -> None:
@@ -414,8 +414,8 @@ class ScriptWrapper(BaseModule):
             if prompt is not None
             else None
         )
-        self._hole_keys = (
-            HoleKeyBuilder(prompt.prompt_plan) if prompt is not None else None
+        self._slot_keys = (
+            SlotKeyBuilder(prompt.prompt_plan) if prompt is not None else None
         )
 
     @property
@@ -439,8 +439,8 @@ class ScriptWrapper(BaseModule):
         if self._prompt_assembler is not None:
             streams = self._prompt_assembler(data)
             batch.additional_infos.update({k: streams[k] for k in OUTPUT_KEYS})
-        if self._hole_keys is not None:
-            batch.additional_infos[HOLE_KEYS] = self._hole_keys(data)
+        if self._slot_keys is not None:
+            batch.additional_infos[SLOT_KEYS] = self._slot_keys(data)
         batch = batch.to(device, non_blocking=True)
         return batch
 

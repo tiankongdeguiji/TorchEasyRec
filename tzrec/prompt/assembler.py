@@ -15,8 +15,8 @@ The collator runs it after parsing and the exported front-end runs the same
 module at serving. ``PromptPlan`` unrolls into constant lists at construction,
 leaving jagged integer arithmetic with no data-dependent control flow, which
 is what ``torch.jit.script`` can carry into a runtime without tzrec source.
-The walk is prompt structure only; ``hole_keys.py`` folds the prefix-cache
-identity of each hole beside it.
+The walk is prompt structure only; ``slot_keys.py`` folds the prefix-cache
+identity of each slot beside it.
 """
 
 from typing import Dict, Final, List, Tuple
@@ -145,7 +145,7 @@ class PromptAssembler(nn.Module):
         self.anchor = ""
         # holes are grouped by projected occurrence in emission order, which is
         # the order of ``projected_slots``, of the front-end's projections and
-        # of ``hole_keys``
+        # of ``slot_keys``
         occurrences = 0
         for seg in segments:
             if isinstance(seg, Static):
@@ -275,7 +275,7 @@ class PromptAssembler(nn.Module):
             ``input_ids``, ``cu_seqlens``, ``hole_positions``,
             ``hole_slot_counts``, ``response_lengths`` and ``max_seqlen``. Holes
             are grouped by projected occurrence in emission order, then by
-            sample; the front-end's ``slot_embeds`` and ``hole_keys`` follow the
+            sample; the front-end's ``slot_embeds`` and ``slot_keys`` follow the
             same order.
         """
         batch_size = self._batch_size(batch)

@@ -9,15 +9,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The ``hole_keys`` fold: a serving-only prefix-cache identity per hole.
+"""The ``slot_keys`` fold: a serving-only prefix-cache identity per slot.
 
-A PROJECTED slot writes the same sentinel at the same position for every
-request, so an engine keying its prefix cache on token ids needs a per-hole
-identity instead. ``HoleKeyBuilder`` folds each hole's input values, never the
-projected vector, into one ``int64`` key per hole, row-aligned with the
-assembler's ``hole_positions``. The fold is integer end to end, so a key cannot
-depend on reduction order, device or batch split. No plan or model identity
-enters a key: only the engine can namespace a shared cache.
+A PROJECTED slot writes the same sentinel at the same positions for every
+request, so an engine keying its prefix cache on token ids needs an identity
+for what fills them. An engine serves each projected slot of a sample as one
+item with one hash, so that is the granularity of the key: ``SlotKeyBuilder``
+folds each hole's input values, never the projected vector, into a key per
+hole, then a slot's hole keys, each mixed with its position in the slot, into
+one ``int64`` per (projected slot, sample). The position is what makes a
+permuted history key differently; a sum of the hole keys alone is commutative.
+The fold is integer end to end, so a key cannot depend on reduction order,
+device or batch split. No plan or model identity enters a key: only the engine
+can namespace a shared cache.
 """
 
 from typing import Dict, Final, List
@@ -29,7 +33,7 @@ from tzrec.prompt.assembler import _row_ids, _within_row_index, batch_device
 from tzrec.prompt.types import PromptPlan
 from tzrec.protos.model_pb2 import FeatureGroupType
 
-HOLE_KEYS = "hole_keys"
+SLOT_KEYS = "slot_keys"
 
 
 @torch.jit.script
@@ -57,20 +61,21 @@ def _wrap64(value: int) -> int:
     return value - (1 << 64) if value >= 1 << 63 else value
 
 
-class HoleKeyBuilder(nn.Module):
-    """Folds every projected slot's input values into one key per hole.
+class SlotKeyBuilder(nn.Module):
+    """Folds every projected slot's input values into one key per sample.
 
     Every value contributing to a hole is discriminated by slot, by member and
     by its index inside the hole; without those, two slots holding the same id,
     a two-member slot with ``(a, b)`` against ``(b, a)``, and a permuted
     multi-value item would all match silently. A dense member contributes each
     float32 of its row as an exact exponent and mantissa, the parsed input
-    rather than a computed reduction. Response slots compile INLINE, so
-    ``projected_slots`` is body-only and stays aligned with the assembler's
-    holes.
+    rather than a computed reduction. Each hole's key is then mixed with its
+    position among the slot's holes in that sample, and those are summed into
+    the slot's key. Response slots compile INLINE, so ``projected_slots`` is
+    body-only and stays aligned with the assembler's ``hole_slot_counts``.
 
     Args:
-        prompt_plan: the compiled plan; its ``projected_slots`` fix the hole
+        prompt_plan: the compiled plan; its ``projected_slots`` fix the key
             order.
     """
 
@@ -79,6 +84,7 @@ class HoleKeyBuilder(nn.Module):
     C_SLOT: Final[int] = -7046029254386353131
     C_VALUE: Final[int] = -49064778989728563
     C_INDEX: Final[int] = -2960836687051489901
+    C_POSITION: Final[int] = -6752110988234923001
     # member index and position within a hole packed into one integer, wide
     # enough that a position cannot carry into the member index
     MEMBER_STRIDE: Final[int] = 1 << 32
@@ -171,6 +177,21 @@ class HoleKeyBuilder(nn.Module):
             keys.index_add_(0, hole, mixed)
         return keys
 
+    def _holes_per_row(
+        self, batch: Dict[str, torch.Tensor], index: int
+    ) -> torch.Tensor:
+        """How many of one projected occurrence's holes each sample owns."""
+        first_name = self.member_names[index][0]
+        if self.is_sequences[index]:
+            # one hole per item, whether the member is sparse or dense
+            return batch[first_name + ".lengths"].to(torch.int64)
+        first = batch[first_name + ".values"]
+        if first.is_floating_point():
+            rows = int(first.size(0))
+        else:
+            rows = int(batch[first_name + ".lengths"].numel())
+        return torch.ones(rows, dtype=torch.int64, device=first.device)
+
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Fold one batch.
 
@@ -179,7 +200,9 @@ class HoleKeyBuilder(nn.Module):
                 ``.lengths`` / ``.key_lengths`` as the data parser emits it.
 
         Returns:
-            ``(total_holes,)`` int64, row-aligned with ``hole_positions``.
+            ``(num_projected_slots * batch_size,)`` int64: projected occurrence
+            first, then sample, the order of ``hole_slot_counts``. A sample
+            with no hole in a slot keys to 0 there.
         """
         # an empty stream first, so a plan without a projected slot still has
         # something to join
@@ -187,5 +210,11 @@ class HoleKeyBuilder(nn.Module):
             torch.zeros(0, dtype=torch.int64, device=batch_device(batch))
         ]
         for i in range(self.num_slots):
-            parts.append(self._fold_slot(batch, i))
+            hole_keys = self._fold_slot(batch, i)
+            counts = self._holes_per_row(batch, i)
+            mixed = mix64(hole_keys + _within_row_index(counts) * self.C_POSITION)
+            keys = torch.zeros(
+                counts.numel(), dtype=torch.int64, device=hole_keys.device
+            )
+            parts.append(keys.index_add_(0, _row_ids(counts), mixed))
         return torch.cat(parts, dim=0)

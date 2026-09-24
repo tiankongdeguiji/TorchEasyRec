@@ -30,12 +30,13 @@ from tzrec.models.genrec_model import (
 )
 from tzrec.models.model import BaseModel, ScriptWrapper, TrainWrapper
 from tzrec.prompt.assembler import (
+    CU_SEQLENS,
     HOLE_POSITIONS,
     HOLE_SLOT_COUNTS,
     INPUT_IDS,
     PromptAssembler,
 )
-from tzrec.prompt.hole_keys import HOLE_KEYS, HoleKeyBuilder
+from tzrec.prompt.slot_keys import SLOT_KEYS, SlotKeyBuilder
 from tzrec.protos import feature_pb2
 from tzrec.protos.model_pb2 import ModelConfig
 from tzrec.protos.models.genrec_model_pb2 import GenRecModelConfig
@@ -322,7 +323,12 @@ class GenRecFrontEndTest(unittest.TestCase):
         for key in (INPUT_IDS, HOLE_POSITIONS):
             self.assertTrue(torch.equal(out[key], walk[key]), key)
         self.assertTrue(
-            torch.equal(out[HOLE_KEYS], HoleKeyBuilder(compiled.prompt_plan)(self.data))
+            torch.equal(out[SLOT_KEYS], SlotKeyBuilder(compiled.prompt_plan)(self.data))
+        )
+        # one key per projected slot per sample
+        self.assertEqual(
+            out[SLOT_KEYS].numel(),
+            out[HOLE_SLOT_COUNTS].numel() * (out[CU_SEQLENS].numel() - 1),
         )
         batch = self.wrapped.get_batch(self.data)
         expected = project_slots(

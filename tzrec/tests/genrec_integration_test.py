@@ -32,7 +32,7 @@ from tzrec.prompt.assembler import (
     PromptAssembler,
 )
 from tzrec.prompt.compile import compile_prompt
-from tzrec.prompt.hole_keys import HOLE_KEYS, HoleKeyBuilder
+from tzrec.prompt.slot_keys import SLOT_KEYS, SlotKeyBuilder
 from tzrec.protos.pipeline_pb2 import EasyRecConfig
 from tzrec.tests import utils
 from tzrec.utils import config_util
@@ -235,10 +235,12 @@ class GenRecIntegrationTest(unittest.TestCase):
             self.assertTrue(torch.equal(out[key], walk[key]), key)
             self.assertTrue(torch.equal(with_device[key], walk[key]), key)
         self.assertTrue(
-            torch.equal(out[HOLE_KEYS], HoleKeyBuilder(compiled.prompt_plan)(data))
+            torch.equal(out[SLOT_KEYS], SlotKeyBuilder(compiled.prompt_plan)(data))
         )
         # profile and ctx are DEEP, one hole per row; hist_tags has two items
         self.assertEqual(out[HOLE_SLOT_COUNTS].tolist(), [4, 4, 8])
+        # but one key per slot per row: three slots over four rows
+        self.assertEqual(out[SLOT_KEYS].numel(), 12)
         # the two DEEP slots have equal width and share one projection module
         plan = compiled.projection_plan
         self.assertEqual(sorted(plan.projections), ["hist_tags", "user_proj"])

@@ -16,7 +16,7 @@ import torch
 from torch import nn
 
 from tzrec.prompt.assembler import HOLE_SLOT_COUNTS, PromptAssembler
-from tzrec.prompt.hole_keys import HoleKeyBuilder, mix64
+from tzrec.prompt.slot_keys import SlotKeyBuilder, mix64
 from tzrec.prompt.types import (
     FillMode,
     PromptPlan,
@@ -86,10 +86,10 @@ class MixTest(unittest.TestCase):
         self.assertEqual(got, [reference(v) for v in values])
 
 
-class HoleKeyBuilderTest(unittest.TestCase):
+class SlotKeyBuilderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plan = _plan((_slot("beh"),))
-        self.module = HoleKeyBuilder(self.plan)
+        self.module = SlotKeyBuilder(self.plan)
 
     def _keys(self, values, lengths):
         return self.module(
@@ -102,7 +102,7 @@ class HoleKeyBuilderTest(unittest.TestCase):
         )
 
     def test_equal_content_folds_equal(self) -> None:
-        """A key is a function of the hole's inputs and nothing else."""
+        """A key is a function of the slot's inputs and nothing else."""
         self.assertTrue(
             torch.equal(self._keys([5, 6, 7], [3]), self._keys([5, 6, 7], [3]))
         )
@@ -112,11 +112,45 @@ class HoleKeyBuilderTest(unittest.TestCase):
         first = self._keys([5, 6, 7], [3])
         second = self._keys([5, 6, 8], [3])
         self.assertEqual(first.dtype, torch.int64)
-        self.assertEqual(first[:2].tolist(), second[:2].tolist())
-        self.assertNotEqual(int(first[2]), int(second[2]))
+        self.assertEqual(first.numel(), 1)
+        self.assertNotEqual(int(first[0]), int(second[0]))
 
-    def test_keys_follow_the_assemblers_hole_order(self) -> None:
-        """Projected occurrence first, then sample, like ``hole_positions``."""
+    def test_a_permuted_history_does_not_collide(self) -> None:
+        """The same items in another order are another history.
+
+        Each hole's key is the same either way, so a sum of them would be too:
+        mixing every hole key with its position in the slot is what tells the
+        two apart.
+        """
+        forward = _tensors(
+            {
+                "beh.values": np.array([11, 22], dtype=np.int64),
+                "beh.lengths": np.array([2], dtype=np.int64),
+            }
+        )
+        swapped = _tensors(
+            {
+                "beh.values": np.array([22, 11], dtype=np.int64),
+                "beh.lengths": np.array([2], dtype=np.int64),
+            }
+        )
+        self.assertEqual(
+            sorted(self.module._fold_slot(forward, 0).tolist()),
+            sorted(self.module._fold_slot(swapped, 0).tolist()),
+        )
+        self.assertNotEqual(
+            self.module(forward).tolist(), self.module(swapped).tolist()
+        )
+
+    def test_a_samples_key_does_not_depend_on_the_rest_of_the_batch(self) -> None:
+        """A request batched with others keys exactly as it does alone."""
+        keys = self._keys([1, 2, 3], [1, 2])
+        self.assertEqual(keys.numel(), 2)
+        self.assertEqual(int(keys[0]), int(self._keys([1], [1])[0]))
+        self.assertEqual(int(keys[1]), int(self._keys([2, 3], [2])[0]))
+
+    def test_keys_follow_the_assemblers_slot_order(self) -> None:
+        """Projected occurrence first, then sample, like ``hole_slot_counts``."""
         a, b = _slot("a", slot_id=0), _slot("b", slot_id=1)
         batch = _tensors(
             {
@@ -126,14 +160,15 @@ class HoleKeyBuilderTest(unittest.TestCase):
                 "b.lengths": np.array([2, 1], dtype=np.int64),
             }
         )
-        keys = HoleKeyBuilder(_plan((a, Static((7,)), b)))(batch)
+        keys = SlotKeyBuilder(_plan((a, Static((7,)), b)))(batch)
         counts = PromptAssembler(_plan((a, Static((7,)), b)), _SID_SPACE)(batch)[
             HOLE_SLOT_COUNTS
         ]
         self.assertEqual(counts.tolist(), [3, 3])
-        self.assertEqual(keys.numel(), 6)
-        self.assertTrue(torch.equal(keys[:3], HoleKeyBuilder(_plan((a,)))(batch)))
-        self.assertTrue(torch.equal(keys[3:], HoleKeyBuilder(_plan((b,)))(batch)))
+        # one key per slot per sample: two slots over two samples
+        self.assertEqual(keys.numel(), 4)
+        self.assertTrue(torch.equal(keys[:2], SlotKeyBuilder(_plan((a,)))(batch)))
+        self.assertTrue(torch.equal(keys[2:], SlotKeyBuilder(_plan((b,)))(batch)))
 
     def test_two_slots_holding_the_same_id_do_not_collide(self) -> None:
         """The slot id salts the key, so the same value in another slot differs."""
@@ -143,7 +178,7 @@ class HoleKeyBuilderTest(unittest.TestCase):
                 "beh.lengths": np.array([1], dtype=np.int64),
             }
         )
-        other = HoleKeyBuilder(_plan((_slot("beh", slot_id=1),)))
+        other = SlotKeyBuilder(_plan((_slot("beh", slot_id=1),)))
         self.assertFalse(torch.equal(self.module(batch), other(batch)))
 
     def test_two_empty_holes_do_not_collide(self) -> None:
@@ -154,10 +189,10 @@ class HoleKeyBuilderTest(unittest.TestCase):
                 "beh.lengths": np.array([0], dtype=np.int64),
             }
         )
-        deep = HoleKeyBuilder(
+        deep = SlotKeyBuilder(
             _plan((_slot("beh", group_type=FeatureGroupType.DEEP, slot_id=0),))
         )
-        other = HoleKeyBuilder(
+        other = SlotKeyBuilder(
             _plan((_slot("beh", group_type=FeatureGroupType.DEEP, slot_id=1),))
         )
         self.assertEqual(deep(batch).numel(), 1)
@@ -182,7 +217,7 @@ class HoleKeyBuilderTest(unittest.TestCase):
 
     def test_two_members_exchanging_values_do_not_collide(self) -> None:
         """Without the member index a two-member slot is order-blind."""
-        module = HoleKeyBuilder(_plan((_slot("pair", feature_names=("a", "b")),)))
+        module = SlotKeyBuilder(_plan((_slot("pair", feature_names=("a", "b")),)))
 
         def keys(first, second):
             return module(
@@ -200,7 +235,7 @@ class HoleKeyBuilderTest(unittest.TestCase):
 
     def test_a_dense_member_folds_its_value(self) -> None:
         """A float member folds the value it was parsed as, so it is stable."""
-        module = HoleKeyBuilder(
+        module = SlotKeyBuilder(
             _plan((_slot("vec", group_type=FeatureGroupType.DEEP),))
         )
 
@@ -218,27 +253,27 @@ class HoleKeyBuilderTest(unittest.TestCase):
         self.assertEqual(len(folded), 4)
 
     def test_a_dense_sequence_member_folds_each_item(self) -> None:
-        """Every row of a dense sequence is one item, so one hole and one key."""
+        """Every row of a dense sequence is one item: a hole of its own, in order."""
 
         def keys(rows):
             return self.module(
                 {"beh.values": torch.tensor(rows), "beh.lengths": torch.tensor([2])}
             )
 
-        self.assertEqual(keys([[0.5], [1.0]]).numel(), 2)
+        self.assertEqual(keys([[0.5], [1.0]]).numel(), 1)
         self.assertEqual(keys([[0.5], [1.0]]).tolist(), keys([[0.5], [1.0]]).tolist())
         self.assertNotEqual(
             keys([[0.5], [1.0]]).tolist(), keys([[1.0], [0.5]]).tolist()
         )
 
     def test_no_projected_slot_folds_nothing(self) -> None:
-        keys = HoleKeyBuilder(_plan((Static((7,)),)))({"batch_size": torch.tensor(2)})
+        keys = SlotKeyBuilder(_plan((Static((7,)),)))({"batch_size": torch.tensor(2)})
         self.assertEqual(keys.numel(), 0)
         self.assertEqual(keys.dtype, torch.int64)
 
     def test_scripting_preserves_the_keys(self) -> None:
         """The exported front-end folds exactly what the eager module does."""
-        module = HoleKeyBuilder(
+        module = SlotKeyBuilder(
             _plan(
                 (
                     _slot("beh"),
@@ -290,7 +325,7 @@ class HoleKeyBuilderTest(unittest.TestCase):
         The float member carries the non-finite values whose int casts differ
         by device, so the fixed codes they take are what keeps the keys equal.
         """
-        module = HoleKeyBuilder(
+        module = SlotKeyBuilder(
             _plan(
                 (
                     _slot("beh"),
