@@ -1,29 +1,62 @@
-name: Unit Test CI
+name: Blank node acceptance
+run-name: dsw-drain ${{ inputs.token }}
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
   workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [smoke, park]
+        default: smoke
+      role:
+        type: choice
+        options: [cpu, accel]
+        required: true
+      runner_label:
+        type: string
+        required: true
+      token:
+        type: string
+        required: true
+      epoch:
+        type: string
+        default: '0'
+      boot_id:
+        type: string
+        default: unused
 
 permissions:
   contents: read
 
-concurrency:
-  group: unittest-ci-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
-  dsw-test:
-    uses: ./.github/workflows/dsw_ci.yml
-    with:
-      lane: gpu
-      ref: ${{ github.event.pull_request.head.sha || github.sha }}
-  ci-test:
-    needs: dsw-test
-    if: always()
-    runs-on: ubuntu-latest
+  acceptance:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 45
     steps:
-      - name: Require the DSW test job to succeed
+      - uses: actions/checkout@v4
+        if: inputs.action == 'smoke'
+        with:
+          persist-credentials: false
+      - name: Run native smoke tests with the installed runtime
+        id: tests
+        if: inputs.action == 'smoke'
         env:
-          TEST_RESULT: ${{ needs.dsw-test.result }}
-        run: test "$TEST_RESULT" = success
+          TZCI_ROLE: ${{ inputs.role }}
+        run: /opt/conda/bin/python /opt/tzci/acceptance.py
+      - name: Upload evidence
+        if: always() && steps.tests.outputs.report_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ inputs.role }}-${{ github.run_id }}
+          path: ${{ steps.tests.outputs.report_dir }}
+      - name: Park the persistent runner
+        if: inputs.action == 'park'
+        env:
+          TZCI_ROLE: ${{ inputs.role }}
+          TZCI_EPOCH: ${{ inputs.epoch }}
+          TZCI_BOOT: ${{ inputs.boot_id }}
+          TZCI_TOKEN: ${{ inputs.token }}
+        run: |
+          /opt/tzci/current/bin/tzci-node park \
+            --role "$TZCI_ROLE" --epoch "$TZCI_EPOCH" \
+            --boot-id "$TZCI_BOOT" --token "$TZCI_TOKEN"
