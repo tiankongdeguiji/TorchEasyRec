@@ -7,7 +7,7 @@ on:
       action:
         type: choice
         options: [smoke, park]
-        default: smoke
+        default: park
       role:
         type: choice
         options: [cpu, accel]
