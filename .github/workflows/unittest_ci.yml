@@ -1,62 +1,30 @@
-name: Blank node acceptance
-run-name: dsw-drain ${{ inputs.token }}
-
+name: Drain acceptance witness
+run-name: drain-check ${{ inputs.token }}
 on:
   workflow_dispatch:
     inputs:
-      action:
-        type: choice
-        options: [smoke, park]
-        default: park
-      role:
-        type: choice
-        options: [cpu, accel]
+      token:
+        type: string
         required: true
       runner_label:
         type: string
         required: true
-      token:
+      duration:
         type: string
-        required: true
-      epoch:
-        type: string
-        default: '0'
-      boot_id:
-        type: string
-        default: unused
-
-permissions:
-  contents: read
-
+        default: '45'
+permissions: {}
 jobs:
-  acceptance:
-    runs-on: ${{ inputs.runner_label }}
-    timeout-minutes: 45
+  witness:
+    runs-on: [tzci-dsw, '${{ inputs.runner_label }}']
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        if: inputs.action == 'smoke'
-        with:
-          persist-credentials: false
-      - name: Run native smoke tests with the installed runtime
-        id: tests
-        if: inputs.action == 'smoke'
+      - name: Finish an assigned job naturally
         env:
-          TZCI_ROLE: ${{ inputs.role }}
-        run: /opt/conda/bin/python /opt/tzci/acceptance.py
-      - name: Upload evidence
-        if: always() && steps.tests.outputs.report_dir != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: acceptance-${{ inputs.role }}-${{ github.run_id }}
-          path: ${{ steps.tests.outputs.report_dir }}
-      - name: Park the persistent runner
-        if: inputs.action == 'park'
-        env:
-          TZCI_ROLE: ${{ inputs.role }}
-          TZCI_EPOCH: ${{ inputs.epoch }}
-          TZCI_BOOT: ${{ inputs.boot_id }}
-          TZCI_TOKEN: ${{ inputs.token }}
+          HOLD_SECONDS: ${{ inputs.duration }}
         run: |
-          /opt/tzci/current/bin/tzci-node park \
-            --role "$TZCI_ROLE" --epoch "$TZCI_EPOCH" \
-            --boot-id "$TZCI_BOOT" --token "$TZCI_TOKEN"
+          python3 - <<'PY'
+          import os, time
+          print('runner context', os.environ['TZCI_NODE'], os.environ['TZCI_ROLE'], flush=True)
+          time.sleep(int(os.environ['HOLD_SECONDS']))
+          print('finished naturally', flush=True)
+          PY
