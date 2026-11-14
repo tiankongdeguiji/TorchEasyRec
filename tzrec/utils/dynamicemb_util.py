@@ -396,6 +396,67 @@ def _log_dynamicemb_table_plan(
     )
 
 
+@torch.no_grad()
+def lookup_publish_embeddings(
+    module: torch.nn.Module, keys: torch.Tensor, table_id: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Read rank-local embeddings without changing scores, admitting or writing rows.
+
+    The caller must fence prior GPU work and exclude model mutations until the
+    values are copied. Only found rows are valid. Keep the pinned DynamicEmb
+    state-level APIs here: train-mode cache.lookup/storage.find can update
+    scores, and eval_lookup initializes misses instead of returning a mask.
+    """
+    from dynamicemb.key_value_table import (
+        DynamicEmbStorage,
+        HybridStorage,
+        _find_keys,
+        _flat_row_indices_for_value_load,
+        load_from_flat,
+    )
+    from dynamicemb.types import CopyMode
+
+    cache, storage = module.cache, module.tables
+    states = [cache._state] if cache is not None else []
+    external = not isinstance(storage, (DynamicEmbStorage, HybridStorage))
+    if isinstance(storage, DynamicEmbStorage):
+        states.append(storage._state)
+    elif isinstance(storage, HybridStorage):
+        states.extend((storage._hbm, storage._host))
+    else:
+        from tzrec_ext.rocksdb.storage import RocksDBStorage
+
+        if not isinstance(storage, RocksDBStorage):
+            raise TypeError(f"No read-only delta lookup for {type(storage).__name__}")
+
+    dim = storage.embedding_dim(table_id)
+    found = torch.zeros_like(keys, dtype=torch.bool)
+    values = torch.empty(
+        (keys.numel(), dim), dtype=storage.embedding_dtype(), device=keys.device
+    )
+    positions = torch.arange(keys.numel(), device=keys.device)
+    for state in states:
+        tids = torch.full_like(keys, table_id, dtype=torch.int64)
+        nmiss, missing_keys, missing_pos, _, _, hits, scores, slots = _find_keys(
+            state, keys, tids, const_lookup=True
+        )
+        rows = _flat_row_indices_for_value_load(state, hits, scores, slots)
+        block = load_from_flat(state, rows, tids, CopyMode.EMBEDDING)
+        values[positions] = block[:, :dim]
+        found[positions] = hits
+        if not nmiss:
+            return found, values
+        positions = positions[missing_pos]
+        keys = missing_keys
+
+    if external and keys.numel():
+        tids = torch.full_like(keys, table_id, dtype=torch.int64)
+        _, _, _, _, _, hits, _, block = storage.find(keys, tids, CopyMode.EMBEDDING)
+        values[positions] = block[:, :dim]
+        found[positions] = hits
+    return found, values
+
+
 def _get_optimizer_multipler(
     optimizer_class: Optional[Type[torch.optim.Optimizer]],
     shape: torch.Size,

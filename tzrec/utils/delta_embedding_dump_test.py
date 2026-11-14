@@ -12,11 +12,10 @@
 import glob
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Dict, List
 from unittest import mock
 
@@ -240,15 +239,9 @@ class _FakeDynamicTables:
         return None, None, None, None, None, founds, None, values
 
 
-def _dynamicemb_stub_modules() -> Dict[str, ModuleType]:
-    # The _append_dynamic_rows tests fake the whole dynamic module; the only
-    # real dynamicemb dependency is the CopyMode import, so stubbing it lets
-    # them run (and cover device placement) without dynamicemb installed.
-    types_mod = ModuleType("dynamicemb.types")
-    types_mod.CopyMode = SimpleNamespace(EMBEDDING="EMBEDDING")
-    mod = ModuleType("dynamicemb")
-    mod.types = types_mod
-    return {"dynamicemb": mod, "dynamicemb.types": types_mod}
+def _fake_publish_lookup(module, keys, table_id):
+    result = module.tables.find(keys, torch.full_like(keys, table_id), "EMBEDDING")
+    return result[5], result[7]
 
 
 def _build_sharded_delta_dump_model(rank: int, world_size: int, ctx):
@@ -3030,22 +3023,22 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
         )
         table_chunks = []
 
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
-            from dynamicemb.types import CopyMode
-
+        with mock.patch(
+            "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+            side_effect=_fake_publish_lookup,
+        ):
             num_rows = dumper._append_dynamic_rows(
                 table_chunks,
                 global_step=5,
                 fqn=self._DYN_TABLE_FQN,
                 dynamic_module=dynamic_module,
                 tracker_ids=torch.tensor([101, 102, 103]),
-                flushed_module_ids=set(),
                 dump_evicted_tombstones=False,
             )
 
         self.assertEqual(num_rows, 2)
-        dynamic_module.flush.assert_called_once_with()
-        self.assertIs(fake_tables.copy_mode, CopyMode.EMBEDDING)
+        dynamic_module.flush.assert_not_called()
+        self.assertEqual(fake_tables.copy_mode, "EMBEDDING")
         torch.testing.assert_close(fake_tables.ids.cpu(), torch.tensor([101, 102, 103]))
         torch.testing.assert_close(fake_tables.table_ids.cpu(), torch.tensor([0, 0, 0]))
         table = pa.concat_tables(table_chunks)
@@ -3055,48 +3048,6 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
             table["source"].to_pylist(),
             ["model_delta_tracker", "model_delta_tracker"],
         )
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for dynamicemb.")
-    @mark_ci_scope("gpu")
-    def test_append_dynamic_rows_flushes_module_once_per_dump(self):
-        torch.cuda.set_device(0)
-        dumper = self._eviction_dumper()
-        # One module hosting two tables, reachable under both table_name keys.
-        dynamic_module = SimpleNamespace(
-            table_names=["dyn_a", "dyn_b"],
-            tables=_FakeDynamicTables(),
-            flush=mock.MagicMock(),
-            _dynamicemb_options=[SimpleNamespace(dim=2), SimpleNamespace(dim=2)],
-        )
-
-        flushed_module_ids = set()
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
-            for table_name in ("dyn_a", "dyn_b"):
-                dumper._append_dynamic_rows(
-                    [],
-                    global_step=5,
-                    fqn=f"model.ec.embeddings.{table_name}",
-                    dynamic_module=dynamic_module,
-                    tracker_ids=torch.tensor([101, 102, 103]),
-                    flushed_module_ids=flushed_module_ids,
-                    dump_evicted_tombstones=False,
-                )
-
-            # Both tables share the module; flush() flushes all tables, so it
-            # runs once per dump rather than once per table.
-            dynamic_module.flush.assert_called_once_with()
-            # A module already flushed this dump is not flushed again.
-            dynamic_module.flush.reset_mock()
-            dumper._append_dynamic_rows(
-                [],
-                global_step=6,
-                fqn="model.ec.embeddings.dyn_a",
-                dynamic_module=dynamic_module,
-                tracker_ids=torch.tensor([101, 102, 103]),
-                flushed_module_ids={id(dynamic_module)},
-                dump_evicted_tombstones=False,
-            )
-        dynamic_module.flush.assert_not_called()
 
     _DYN_TABLE_FQN = "model.ec.embeddings.dyn_table"
 
@@ -3116,6 +3067,8 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
             fqn_to_feature_names={self._DYN_TABLE_FQN: ["user_id"]}
         )
         dumper._warned_no_retain_tables = set()
+        dumper._pending_evicted = {}
+        dumper._pending_tracked = {}
         return dumper
 
     def _eviction_module(self, evicted_keys, founds=None, values=None, rows=None):
@@ -3132,6 +3085,50 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for dynamicemb.")
     @mark_ci_scope("gpu")
+    def test_retry_keeps_drained_ids_until_uploader_accepts_delta(self):
+        dumper = self._eviction_dumper()
+        dumper._dump_evicted_tombstones = True
+        dumper._feature_store_enabled = True
+        dumper._retain_local_dump = False
+        dumper._uploader = mock.Mock()
+        dumper._uploader.submit.side_effect = [
+            RuntimeError("submit failed"),
+            None,
+            None,
+        ]
+        fqn = self._DYN_TABLE_FQN
+        dumper._tracker.get_unique = mock.Mock(
+            side_effect=[{fqn: SimpleNamespace(ids=torch.tensor([9, 10]))}, {}, {}]
+        )
+        module = self._eviction_module([], rows={7: [0.0, 0.0], 9: [3.0, 4.0]})
+        module.pop_evicted_keys.side_effect = [
+            {"dyn_table": torch.tensor(ids, dtype=torch.int64)}
+            for ids in ([7, 8], [], [])
+        ]
+        with (
+            mock.patch.object(dumper, "_collect_table_weights", return_value={}),
+            mock.patch.object(
+                dumper, "_collect_dynamic_modules", return_value={fqn: module}
+            ),
+            mock.patch(
+                "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+                side_effect=_fake_publish_lookup,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "submit failed"):
+                dumper.dump(5)
+            dumper.dump(5)
+            table = dumper._uploader.submit.call_args.args[1]
+            self.assertEqual(table["key_id"].to_pylist(), [7, 9, 8])
+            self.assertEqual(
+                table["source"].to_pylist(),
+                ["model_delta_tracker", "model_delta_tracker", "dynamicemb_evicted"],
+            )
+            dumper.dump(6)
+            self.assertEqual(dumper._uploader.submit.call_args.args[1].num_rows, 0)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for dynamicemb.")
+    @mark_ci_scope("gpu")
     def test_append_dynamic_rows_tombstones_evicted_keys(self):
         torch.cuda.set_device(0)
         dumper = self._eviction_dumper()
@@ -3142,20 +3139,21 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
         )
         table_chunks = []
 
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
+        with mock.patch(
+            "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+            side_effect=_fake_publish_lookup,
+        ):
             num_rows = dumper._append_dynamic_rows(
                 table_chunks,
                 global_step=5,
                 fqn=self._DYN_TABLE_FQN,
                 dynamic_module=dynamic_module,
                 tracker_ids=torch.empty(0, dtype=torch.int64),
-                flushed_module_ids=set(),
                 dump_evicted_tombstones=True,
             )
 
         self.assertEqual(num_rows, 2)
-        # flush() precedes the pop so flush-induced evictions join the drain.
-        dynamic_module.flush.assert_called_once_with()
+        dynamic_module.flush.assert_not_called()
         dynamic_module.pop_evicted_keys.assert_called_once_with(["dyn_table"])
         table = pa.concat_tables(table_chunks)
         self.assertEqual(table["key_id"].to_pylist(), [7, 9])
@@ -3180,14 +3178,16 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
         )
         table_chunks = []
 
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
+        with mock.patch(
+            "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+            side_effect=_fake_publish_lookup,
+        ):
             num_rows = dumper._append_dynamic_rows(
                 table_chunks,
                 global_step=5,
                 fqn=self._DYN_TABLE_FQN,
                 dynamic_module=dynamic_module,
                 tracker_ids=torch.tensor([7, 9]),
-                flushed_module_ids=set(),
                 dump_evicted_tombstones=True,
             )
 
@@ -3216,14 +3216,16 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
         )
         table_chunks = []
 
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
+        with mock.patch(
+            "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+            side_effect=_fake_publish_lookup,
+        ):
             num_rows = dumper._append_dynamic_rows(
                 table_chunks,
                 global_step=5,
                 fqn=self._DYN_TABLE_FQN,
                 dynamic_module=dynamic_module,
                 tracker_ids=torch.tensor([101, 102, 103]),
-                flushed_module_ids=set(),
                 dump_evicted_tombstones=True,
             )
 
@@ -3249,7 +3251,10 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
         )
         table_chunks = []
 
-        with mock.patch.dict(sys.modules, _dynamicemb_stub_modules()):
+        with mock.patch(
+            "tzrec.utils.delta_embedding_dump.lookup_publish_embeddings",
+            side_effect=_fake_publish_lookup,
+        ):
             with mock.patch("tzrec.utils.delta_embedding_dump._FIND_BATCH_ROWS", 2):
                 with mock.patch("tzrec.utils.delta_embedding_dump.logger") as log:
                     num_rows = dumper._append_dynamic_rows(
@@ -3258,7 +3263,6 @@ class DeltaEmbeddingDumpValidationTest(unittest.TestCase):
                         fqn=self._DYN_TABLE_FQN,
                         dynamic_module=dynamic_module,
                         tracker_ids=torch.tensor([101, 102, 103]),
-                        flushed_module_ids=set(),
                         dump_evicted_tombstones=True,
                     )
 
@@ -3679,7 +3683,7 @@ class DeltaEmbeddingDumpDynamicembIntegrationTest(unittest.TestCase):
 
     Runs the real tzrec train pipeline (torchrun, row-wise sharded dynamicemb
     tables) with delta dump enabled, so the dynamic lookup path
-    (``flush()`` + ``tables.find()``) is exercised under genuine multi-rank
+    (cache-first read-only lookup) is exercised under genuine multi-rank
     sharding rather than a single-process fake table.
     """
 
@@ -3790,11 +3794,11 @@ class DeltaEmbeddingDumpDynamicembIntegrationTest(unittest.TestCase):
                     self.assertEqual(emb, [0.0] * len(emb))
                     self.assertNotIn((fqn, key), real_keys)
 
-        # If no rank ever dumped a real row, the flush()/find() lookup path was
+        # If no rank ever dumped a real row, the cache-first lookup path was
         # not actually exercised and the test would be vacuous.
         self.assertTrue(
             dumped_real_rows,
-            "no dynamic delta rows dumped; flush()/find() path not exercised",
+            "no dynamic delta rows dumped; cache-first lookup path not exercised",
         )
         # The shrunken max_capacity forces evictions during training; they
         # must reach the shards as tombstones or the pop_evicted_keys drain

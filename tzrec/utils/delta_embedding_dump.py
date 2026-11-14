@@ -51,6 +51,7 @@ from torchrec.modules.mc_modules import MCHManagedCollisionModule
 from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 
 from tzrec.protos.train_pb2 import DeltaEmbeddingDumpConfig, DeltaEmbeddingQuantType
+from tzrec.utils.dynamicemb_util import lookup_publish_embeddings
 from tzrec.utils.feature_store_uploader import (
     FEATURE_STORE_EMBEDDING_TYPE_FLOAT,
     FEATURE_STORE_EMBEDDING_TYPE_UINT8,
@@ -846,6 +847,9 @@ class DeltaEmbeddingDumper:
         self._config = config
         self._quant_type = config.quant_type
         self._dump_evicted_tombstones = bool(config.dump_evicted_tombstones)
+        # Drains advance cursors; retain their IDs until write/submit succeeds.
+        self._pending_evicted: Dict[str, torch.Tensor] = {}
+        self._pending_tracked: Dict[str, torch.Tensor] = {}
         self._schema = (
             _DELTA_DUMP_QUANT_SCHEMA
             if self._quant_type == DeltaEmbeddingQuantType.DELTA_EMBEDDING_QUANT_INT8
@@ -982,6 +986,8 @@ class DeltaEmbeddingDumper:
         reason.
         """
         self._tracker.clear(_CONSUMER)
+        self._pending_evicted = {}
+        self._pending_tracked = {}
         if not self._dump_evicted_tombstones:
             return
         popped_module_ids: Set[int] = set()
@@ -1260,6 +1266,8 @@ class DeltaEmbeddingDumper:
                 if table_chunks
                 else self._schema.empty_table(),
             )
+        self._pending_evicted = {}
+        self._pending_tracked = {}
         if num_rows == 0:
             if output_path is None:
                 logger.debug("No delta embedding rows to dump at step %s.", global_step)
@@ -1300,13 +1308,12 @@ class DeltaEmbeddingDumper:
         global_step: int,
         table_weights: Dict[str, _TableWeight],
         dynamic_modules: Dict[str, nn.Module],
-        flushed_module_ids: Optional[Set[int]] = None,
         dump_evicted_tombstones: bool = False,
     ) -> int:
         """Append real rows for touched ids and tombstones for evicted keys.
 
         Dynamic tables merge the tracker's ids with this dump's evicted
-        keys into one post-flush lookup: found keys publish their current
+        keys into one read-only lookup: found keys publish their current
         embeddings, missing keys from the evicted set publish zero
         tombstones, and missing keys that were never admitted are skipped
         with a warning. One lookup resolves both orderings within a dump
@@ -1320,8 +1327,6 @@ class DeltaEmbeddingDumper:
             global_step: Current training step.
             table_weights: Local weight shards keyed by table FQN.
             dynamic_modules: Dynamic embedding modules keyed by table FQN.
-            flushed_module_ids: Modules already flushed this dump; created
-                locally when None so direct callers keep working.
             dump_evicted_tombstones: When True, dynamic tables drain their
                 evicted-key buffers and publish tombstones; tables without
                 tracker rows are still visited so the buffers are drained.
@@ -1330,20 +1335,25 @@ class DeltaEmbeddingDumper:
             Number of rows appended.
         """
         num_rows = 0
-        if flushed_module_ids is None:
-            flushed_module_ids = set()
-        unique_rows_by_fqn = self._tracker.get_unique(_CONSUMER)
-        fqns = list(unique_rows_by_fqn)
+        if dynamic_modules:
+            # Finish prior prefetch and writeback before popping IDs or reading slots.
+            torch.cuda.synchronize()
+        for fqn, rows in self._tracker.get_unique(_CONSUMER).items():
+            previous = self._pending_tracked.get(fqn)
+            self._pending_tracked[fqn] = (
+                rows.ids
+                if previous is None
+                else torch.cat([previous, rows.ids]).unique()
+            )
+        fqns = list(self._pending_tracked)
         if dump_evicted_tombstones:
-            fqns += [fqn for fqn in dynamic_modules if fqn not in unique_rows_by_fqn]
+            fqns += [fqn for fqn in dynamic_modules if fqn not in self._pending_tracked]
         for fqn in fqns:
-            unique_rows = unique_rows_by_fqn.get(fqn)
+            ids = self._pending_tracked.get(fqn)
             dynamic_module = dynamic_modules.get(fqn)
             if dynamic_module is not None:
                 tracker_ids = (
-                    unique_rows.ids
-                    if unique_rows is not None
-                    else torch.empty(0, dtype=torch.int64)
+                    ids if ids is not None else torch.empty(0, dtype=torch.int64)
                 )
                 num_rows += self._append_dynamic_rows(
                     table_chunks,
@@ -1351,13 +1361,12 @@ class DeltaEmbeddingDumper:
                     fqn=fqn,
                     dynamic_module=dynamic_module,
                     tracker_ids=tracker_ids,
-                    flushed_module_ids=flushed_module_ids,
                     dump_evicted_tombstones=dump_evicted_tombstones,
                 )
                 continue
-            if unique_rows is None or unique_rows.ids.numel() == 0:
+            if ids is None or ids.numel() == 0:
                 continue
-            ids = unique_rows.ids.unique(sorted=True)
+            ids = ids.unique(sorted=True)
             embeddings, key_ids = self._lookup_embeddings(fqn, ids, table_weights)
             num_rows += self._append_table_chunk(
                 table_chunks,
@@ -1496,13 +1505,12 @@ class DeltaEmbeddingDumper:
         fqn: str,
         dynamic_module: nn.Module,
         tracker_ids: torch.Tensor,
-        flushed_module_ids: Set[int],
         dump_evicted_tombstones: bool,
     ) -> int:
         """Append one merged lookup's real rows and tombstones for a table.
 
         The tracker ids and this dump's evicted keys are merged and
-        deduplicated on host, then resolved by a post-flush ``find`` batched
+        deduplicated on host, then resolved by a cache-first lookup batched
         in ``_FIND_BATCH_ROWS`` slices so the GPU values buffer stays capped
         regardless of eviction volume. Each key publishes exactly one row:
         its current embedding when present, a zero tombstone when absent
@@ -1515,27 +1523,13 @@ class DeltaEmbeddingDumper:
             fqn: Dynamic table FQN.
             dynamic_module: Dynamic embedding module hosting the table.
             tracker_ids: Touched ids recorded by the tracker for this table.
-            flushed_module_ids: Modules already flushed this dump; a module
-                hosting several tables flushes once, not once per table.
             dump_evicted_tombstones: Whether to drain this table's evicted
                 keys and publish tombstones for the missing ones.
 
         Returns:
             Number of rows appended.
         """
-        try:
-            from dynamicemb.types import CopyMode
-        except ImportError as exc:
-            raise RuntimeError(
-                "dynamicemb is required to dump dynamic embedding values."
-            ) from exc
         table_name = fqn.rsplit(".", maxsplit=1)[-1]
-        # flush() both syncs the caching store for the lookup and can evict
-        # backing-store rows; flush before the pop and the find so both see
-        # the post-flush state.
-        if id(dynamic_module) not in flushed_module_ids:
-            dynamic_module.flush()
-            flushed_module_ids.add(id(dynamic_module))
         table_id = cast(List[str], dynamic_module.table_names).index(table_name)
         # pyre-ignore [29]
         emb_dim = dynamic_module._dynamicemb_options[table_id].dim
@@ -1544,7 +1538,15 @@ class DeltaEmbeddingDumper:
         if dump_evicted_tombstones:
             evicted = self._pop_evicted_key_ids(fqn, dynamic_module, table_name)
             if evicted is not None and evicted.numel() > 0:
-                evicted_ids = evicted.cpu().to(torch.int64)
+                new_ids = evicted.cpu().to(torch.int64)
+                previous = self._pending_evicted.get(fqn)
+                self._pending_evicted[fqn] = (
+                    new_ids
+                    if previous is None
+                    else torch.cat([previous, new_ids]).unique()
+                )
+            evicted_ids = self._pending_evicted.get(fqn)
+            if evicted_ids is not None:
                 ids = torch.cat([ids, evicted_ids])
         ids = ids.unique(sorted=True)
         if ids.numel() == 0:
@@ -1560,11 +1562,9 @@ class DeltaEmbeddingDumper:
         for start in range(0, ids.numel(), _FIND_BATCH_ROWS):
             batch_ids = ids[start : start + _FIND_BATCH_ROWS]
             gpu_ids = batch_ids.to(device=device)
-            table_ids = torch.full_like(gpu_ids, table_id, dtype=torch.int64)
-            _, _, _, _, _, founds, _, values = dynamic_module.tables.find(
-                gpu_ids, table_ids, CopyMode.EMBEDDING
+            founds, values = lookup_publish_embeddings(
+                dynamic_module, gpu_ids, table_id
             )
-            founds = founds.to(dtype=torch.bool)
             # Only the compact found mask moves D2H; found and tombstone key
             # ids reuse the CPU batch ids instead of round-tripping GPU ids.
             founds_cpu = founds.cpu()
