@@ -130,8 +130,7 @@ def schedule(
                 free.difference_update(lease)
                 selected = [cards[i] for i in lease] if cards else []
                 child_env = dict(env, CUDA_VISIBLE_DEVICES=",".join(selected))
-                worker = lease[0]
-                checkout = directory / str(worker)
+                checkout = directory / str(lease[0])
                 if not checkout.exists():
                     shutil.copytree(
                         Path.cwd(),
@@ -146,16 +145,6 @@ def schedule(
                             ".ruff_cache",
                         ),
                     )
-                for variable, kind in (
-                    ("TRITON_CACHE_DIR", "triton"),
-                    ("TORCHINDUCTOR_CACHE_DIR", "inductor"),
-                ):
-                    cache = (
-                        Path(env.get(variable, str(directory / kind)))
-                        / f"worker-{worker}"
-                    )
-                    cache.mkdir(parents=True, exist_ok=True)
-                    child_env[variable] = str(cache.resolve())
                 group["assigned_devices"] = selected
                 group_file = session / "groups" / (group["key"] + ".json")
                 run.write_json(group_file, group)
