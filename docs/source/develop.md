@@ -48,10 +48,10 @@ python -m tzrec.modules.fm_test FactorizationMachineTest.test_fm_0
 
 ### 并行CI测试
 
-三条lane各自在workflow中启动一个作业容器，镜像tag、设备、CPU/内存和共享内存参数直接写在`unittest*_ci.yml`。CPU在64核、256GiB的限额内动态分配16个逻辑slot；H20/PPU按需分配一张或两张卡：
+三条lane各自在workflow中启动一个作业容器，镜像tag、设备、CPU/内存和共享内存参数直接写在`unittest*_ci.yml`。CPU在64核、256GiB的限额内动态分配32个逻辑slot；H20/PPU按需分配一张或两张卡：
 
 ```bash
-bash scripts/ci/ci_test_cpu.sh --parallel --capacity 16 --session ../report
+bash scripts/ci/ci_test_cpu.sh --parallel --capacity 32 --session ../report
 bash scripts/ci/ci_test.sh --parallel --hardware h20 --scope gpu --session ../report --capacity 8
 bash scripts/ci/ci_test_ppu.sh --parallel --scope gpu --hardware ppu --session ../report --capacity 16
 ```
