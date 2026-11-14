@@ -315,7 +315,9 @@ def main() -> int:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, cancel)
-    return dispatch(parser.parse_args())
+    args = parser.parse_args()
+    lane = "gpu" if args.hardware == "h20" else args.hardware
+    return run.run_job(lane, lambda: dispatch(args))
 
 
 if __name__ == "__main__":

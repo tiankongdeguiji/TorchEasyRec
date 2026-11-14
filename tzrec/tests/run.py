@@ -24,7 +24,7 @@ from collections import Counter
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from unittest.runner import TextTestRunner
 from unittest.signals import registerResult
 
@@ -316,6 +316,45 @@ def static_skip(case: unittest.TestCase) -> str | None:
     return None
 
 
+def run_job(lane: str, action: Callable[[], int]) -> int:
+    """Publish a generic runner receipt while executing the test phase."""
+    directory = os.environ.get("TZREC_CI_RECEIPT")
+    if not directory:
+        return action()
+    root = Path(directory)
+    (root / "status").mkdir(parents=True, exist_ok=True)
+    path = root / "state.json"
+    if path.exists():
+        raise ValueError("use a fresh job receipt directory")
+    state = dict(
+        version=1,
+        run_id=int(os.environ.get("GITHUB_RUN_ID", "0")),
+        attempt=int(os.environ.get("GITHUB_RUN_ATTEMPT", "0")),
+        lane=lane,
+        boot_id=os.environ["TZCI_BOOT_ID"],
+        code=None,
+    )
+    os.environ["TZREC_CI_FAILURE_FILE"] = str(root / "status/failed")
+    write_json(path, state)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def cancel(signum: int, frame: Any) -> None:
+        """Allow dispatch cleanup before publishing a cancellation receipt."""
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, cancel)
+    code = 2
+    try:
+        code = action()
+        return code
+    except KeyboardInterrupt:
+        code = 130
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        write_json(path, dict(state, code=code))
+
+
 def discover(test_dir: str, pattern: str, scope: str | None) -> list[dict]:
     """Reuse the repository's scope and subprocess routing without parsing text."""
     unittest.defaultTestLoader.errors.clear()
@@ -408,6 +447,23 @@ class RecordingResult(unittest.TextTestResult):
 
     def _record(self, test: Any, outcome: str, detail: str = "") -> None:
         """Merge repeated teardown/subtest events with failure precedence."""
+        failure_file = os.environ.get("TZREC_CI_FAILURE_FILE")
+        if failure_file and outcome in (
+            "failure",
+            "error",
+            "unexpected_success",
+            "blocked_by_fixture",
+        ):
+            fd = os.open(failure_file, os.O_WRONLY | os.O_CREAT, 0o600)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            directory = os.open(Path(failure_file).parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         journal = os.environ.get("TZREC_CI_EVENT_LOG")
         if journal:
             first = not Path(journal).exists()
@@ -601,6 +657,7 @@ def preserve_execution_environment(env: dict[str, str]) -> None:
         "CUDA_VISIBLE_DEVICES",
         "NVIDIA_VISIBLE_DEVICES",
         "TZREC_CI_EVENT_LOG",
+        "TZREC_CI_FAILURE_FILE",
         "TZREC_CI_SESSION_ID",
     ):
         if key in os.environ:
