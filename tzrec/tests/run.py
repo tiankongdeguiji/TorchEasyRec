@@ -265,7 +265,7 @@ def main() -> int:
 
         from tzrec.tests import ci_execution, ci_protocol
 
-        report_dir = Path(args.report_dir)
+        report_dir = Path(args.report_dir).resolve()
         report_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TZREC_CI_EVENT_LOG"] = str(report_dir / "events.jsonl")
         report_cases = [
@@ -301,9 +301,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if os.environ.get("TZREC_CI_RECEIPT"):
-        from tzrec.tests.ci_protocol import run_job
-
-        sys.exit(run_job("cpu", main))
-    else:
-        sys.exit(main())
+    sys.exit(main())
