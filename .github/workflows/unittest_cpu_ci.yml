@@ -49,7 +49,7 @@ jobs:
             -v "$WORK_ROOT":/__w \
             -v "$RECEIPT_DIR":/ci-receipt \
             mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5-cpu \
-            bash -eo pipefail scripts/ci/ci_test_cpu.sh --report-dir "$REPORT_DIR"
+            bash -eo pipefail scripts/ci/ci_test_cpu.sh --parallel --workers 4 --session "$REPORT_DIR"
       - name: StopDockerContainer
         if: always()
         run: |
