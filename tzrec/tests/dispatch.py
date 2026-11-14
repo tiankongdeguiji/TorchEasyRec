@@ -200,13 +200,7 @@ def dispatch(args: argparse.Namespace) -> int:
     env = dict(os.environ, PYTHONPATH=".")
     cards = []
     if cpu:
-        env.update(
-            CUDA_VISIBLE_DEVICES="",
-            NVIDIA_VISIBLE_DEVICES="void",
-            OMP_NUM_THREADS="1",
-            MKL_NUM_THREADS="1",
-            OPENBLAS_NUM_THREADS="1",
-        )
+        env.update(CUDA_VISIBLE_DEVICES="", NVIDIA_VISIBLE_DEVICES="void")
     else:
         import torch
 
