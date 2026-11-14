@@ -13,24 +13,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dsw-test:
-    uses: ./.github/workflows/dsw_ci.yml
-    with:
-      lane: cpu
-      ref: ${{ github.event.pull_request.head.sha || github.sha }}
-    secrets:
-      ALIBABA_CLOUD_ECS_METADATA: ${{ secrets.ALIBABA_CLOUD_ECS_METADATA }}
-      CI_ODPS_PROJECT_NAME: ${{ secrets.CI_ODPS_PROJECT_NAME }}
-      ODPS_ENDPOINT: ${{ secrets.ODPS_ENDPOINT }}
-      CI_ALIKAFKA_INSTANCE_ID: ${{ secrets.CI_ALIKAFKA_INSTANCE_ID }}
-      CI_ALIKAFKA_BROKERS: ${{ secrets.CI_ALIKAFKA_BROKERS }}
-      CI_REGION: ${{ secrets.CI_REGION }}
   ci-test:
-    needs: dsw-test
-    if: always()
-    runs-on: ubuntu-latest
+    runs-on: [tzci-dsw, dsw-cpu]
+    timeout-minutes: 360
     steps:
-      - name: Require the DSW test job to succeed
+      - name: FetchCommit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: run_${{ github.run_id }}
+      - name: RunUnitTestCI
+        id: tests
         env:
-          TEST_RESULT: ${{ needs.dsw-test.result }}
-        run: test "$TEST_RESULT" = success
+          ALIBABA_CLOUD_ECS_METADATA: ${{ secrets.ALIBABA_CLOUD_ECS_METADATA }}
+          CI_ODPS_PROJECT_NAME: ${{ secrets.CI_ODPS_PROJECT_NAME }}
+          ODPS_ENDPOINT: ${{ secrets.ODPS_ENDPOINT }}
+          CI_ALIKAFKA_INSTANCE_ID: ${{ secrets.CI_ALIKAFKA_INSTANCE_ID }}
+          CI_ALIKAFKA_BROKERS: ${{ secrets.CI_ALIKAFKA_BROKERS }}
+          CI_REGION: ${{ secrets.CI_REGION }}
+        run: |
+          JOB_ROOT="$TZCI_JOB_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$JOB_ROOT/report"
+          printf '%s\n' "report_dir=$JOB_ROOT/report" >> "$GITHUB_OUTPUT"
+          docker run --rm --pull=always --name "cpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --label "tzci.node=$TZCI_NODE" --label "tzci.role=$TZCI_ROLE" \
+            --label "tzci.job=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --workdir /job/repo \
+            --cpus=16 --memory=80g --shm-size=16g --ulimit memlock=-1 \
+            -e GITHUB_ACTIONS=true -e CI=true \
+            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e TZCI_BOOT_ID \
+            -e TZREC_CI_RECEIPT=/ci-receipt -e TZREC_CI_ENV=/tmp/ci-env \
+            -e TRITON_CACHE_DIR=/tmp/ci-cache/triton -e TORCHINDUCTOR_CACHE_DIR=/tmp/ci-cache/inductor \
+            -e ALIBABA_CLOUD_ECS_METADATA -e CI_ODPS_PROJECT_NAME -e ODPS_ENDPOINT -e CI_ALIKAFKA_INSTANCE_ID -e CI_ALIKAFKA_BROKERS -e CI_REGION -e CUDA_VISIBLE_DEVICES= -e NVIDIA_VISIBLE_DEVICES=void \
+            -v "$GITHUB_WORKSPACE/run_${GITHUB_RUN_ID}":/job/repo \
+            -v "$JOB_ROOT":/ci-receipt -v "$JOB_ROOT/report":/ci-results \
+            mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5-cpu \
+            bash scripts/ci/ci_test_cpu.sh --report-dir /ci-results
+      - name: StopDockerContainer
+        if: always()
+        run: |
+          docker stop --timeout=30 "cpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
+          docker rm -f "cpu-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
+      - name: Retain test evidence
+        id: artifacts
+        if: always() && steps.tests.outputs.report_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.tests.outputs.report_dir }}
+          retention-days: 14
+          if-no-files-found: error
+      - name: Clean job directories
+        if: always()
+        env:
+          ARTIFACT_OUTCOME: ${{ steps.artifacts.outcome }}
+        run: |
+          rm -rf -- "${GITHUB_WORKSPACE:?}/run_${GITHUB_RUN_ID:?}"
+          if [ "$ARTIFACT_OUTCOME" = success ]; then
+            rm -rf -- "${TZCI_JOB_ROOT:?}/${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}/report"
+          fi
