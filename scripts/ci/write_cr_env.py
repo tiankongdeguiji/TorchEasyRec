@@ -24,7 +24,14 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Recorded per environment; enough to match one against the requirements/ files.
-_INTERESTING = ("torch", "torchrec", "fbgemm_gpu", "transformers", "torchmetrics")
+_INTERESTING = (
+    "torch",
+    "torchrec",
+    "fbgemm_gpu",
+    "transformers",
+    "torchmetrics",
+    "pyfg",
+)
 
 
 def conda_base(conda: Path) -> Optional[Path]:
