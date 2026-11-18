@@ -133,12 +133,12 @@ jobs:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
+          repository: alibaba/TorchEasyRec
           ref: refs/pull/${{ inputs.pr_number }}/head
           persist-credentials: false
           path: pr-code
       - name: Prepare review checkout
         env:
-          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
@@ -146,7 +146,10 @@ jobs:
           cd pr-code
           rm -rf -- .pr-review
           mkdir .pr-review
-          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .pr-review/diff
+          curl --fail --silent --show-error --max-time 30 \
+            --header 'Accept: application/vnd.github.v3.diff' \
+            "https://api.github.com/repos/alibaba/TorchEasyRec/pulls/$PR_NUMBER" \
+            --output .pr-review/diff
           python3 ../trusted-claude/scripts/ci/split_pr_diff.py --diff .pr-review/diff --out-dir .pr-review
       - name: Prepare DSW review container
         env:
@@ -173,11 +176,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-          CLAUDE_SETTINGS: ${{ secrets.TZREC_CLAUDE_SETTINGS_JSON }}
         run: |
           set -euo pipefail
           container="review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf '%s' "${CLAUDE_SETTINGS:?}" | docker exec -i -e GITHUB_TOKEN \
+          docker exec -i -e GITHUB_TOKEN \
             -e GITHUB_REPOSITORY -e PR_NUMBER "$container" python -I -c '
           import json
           import os
@@ -213,15 +215,21 @@ jobs:
                          "and one exact source line.")
           with tempfile.TemporaryDirectory(prefix="tzrec-claude-") as config:
               env["CLAUDE_CONFIG_DIR"] = config
-              subprocess.run([
+              result = subprocess.run([
                   cli, "--restricted", "-p", "--no-session-persistence",
                   "--output-format", "stream-json", "--verbose",
                   "--permission-mode", "manual", "--strict-mcp-config",
                   "--mcp-config", mcp, "--tools", "Read", "--allowedTools", "Read",
                   "--add-dir", sysconfig.get_path("purelib"),
                   "--settings", json.dumps({"disableRemoteControl": True}), "--", prompt,
-              ], env=env, check=True)
-          '
+              ], env=env, capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          for key in ("ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"):
+              if env.get(key):
+                  output = output.replace(env[key], "[redacted]")
+          print(output, end="")
+          result.check_returncode()
+          ' < "${TZREC_CLAUDE_SETTINGS_FILE:?Fleet must set the runner-local settings path}"
       - name: Clean DSW review container
         if: always()
         run: docker rm -f "review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
