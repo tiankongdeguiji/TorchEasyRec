@@ -100,13 +100,127 @@ name: Code Review
 on:
   pull_request_target:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR to review in the isolated DSW pilot
+        type: number
+        required: true
+      ci_digest:
+        description: H20 CI image digest (sha256:...)
+        type: string
+        required: true
 
 # Group by label so a codex run does not cancel an in-flight claude run
 concurrency:
-  group: codereview-${{ github.event.label.name }}-${{ github.event.pull_request.number }}
+  group: codereview-${{ github.event.label.name || 'dsw-pilot' }}-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
+  review-dsw-pilot:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [tzrec-ci-dsw, tzrec-ci-review-pilot-pr755]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted review files
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: trusted-claude
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          repository: alibaba/TorchEasyRec
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          persist-credentials: false
+          path: pr-code
+      - name: Prepare review checkout
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          bash trusted-claude/scripts/ci/use_trusted_agent_files.sh trusted-claude pr-code
+          cd pr-code
+          rm -rf -- .pr-review
+          mkdir .pr-review
+          curl --fail --silent --show-error --max-time 30 \
+            --header 'Accept: application/vnd.github.v3.diff' \
+            "https://api.github.com/repos/alibaba/TorchEasyRec/pulls/$PR_NUMBER" \
+            --output .pr-review/diff
+      - name: Run isolated DSW review
+        env:
+          CI_DIGEST: ${{ inputs.ci_digest }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          [[ "$CI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          container="review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          runtime="$(readlink -e /opt/tzrec-ci/review/current)"
+          claude="$(readlink -e /opt/tzrec-ci/review/claude-home/.local/bin/claude)"
+          docker run -d --pull=missing --network host --name "$container" \
+            --label "tzrec-ci.node=${TZREC_CI_NODE:?}" --label "tzrec-ci.role=review-ci" \
+            --cpus=2 --memory=8g --shm-size=1g --workdir /checkout \
+            -v "$GITHUB_WORKSPACE/pr-code:/checkout" \
+            -v "$GITHUB_WORKSPACE/trusted-claude/scripts/ci:/review/scripts:ro" \
+            -v "$claude:/review/claude:ro" \
+            -v "$runtime:/review/runtime:ro" \
+            "mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel@$CI_DIGEST" \
+            sleep infinity
+          docker exec "$container" bash -ec '
+            pip install -r requirements-gpu.txt
+            pip install -r requirements/extra.txt
+            python /review/scripts/write_cr_env.py --conda "$(command -v conda)" --out .pr-review/env
+          '
+          docker exec -i -e PR_NUMBER \
+            -e "REPO_OWNER=${GITHUB_REPOSITORY%%/*}" \
+            -e "REPO_NAME=${GITHUB_REPOSITORY#*/}" "$container" python -I -c '
+          import json
+          import os
+          import subprocess
+          import sys
+          import sysconfig
+          import tempfile
+
+          settings = json.load(sys.stdin)["env"]
+          env = os.environ.copy()
+          env.update({key: settings[key] for key in (
+              "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
+              "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+              "ANTHROPIC_DEFAULT_OPUS_MODEL", "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+              "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_SUBAGENT_MODEL",
+          ) if key in settings})
+          env["ANTHROPIC_AUTH_TOKEN"] = settings["ANTHROPIC_AUTH_TOKEN"]
+          env["ANTHROPIC_BASE_URL"] = settings["ANTHROPIC_BASE_URL"]
+          env.update(HTTP_PROXY="http://127.0.0.1:8119", HTTPS_PROXY="http://127.0.0.1:8119",
+                     NO_PROXY="localhost,127.0.0.1", DISABLE_AUTOUPDATER="1")
+          cli = "/review/claude"
+          subprocess.run([cli, "--version"], check=True)
+          prompt = ("Review the PR from .pr-review/diff and report findings in the response. "
+                    "For each dependency version change, use .pr-review/env to find and read "
+                    "the installed source, then report its version and source path. Do not post comments.")
+          with tempfile.TemporaryDirectory(prefix="tzrec-claude-") as config:
+              env["CLAUDE_CONFIG_DIR"] = config
+              result = subprocess.run([
+                  cli, "--restricted", "-p", "--no-session-persistence",
+                  "--output-format", "stream-json", "--verbose",
+                  "--permission-mode", "manual", "--strict-mcp-config",
+                  "--mcp-config", "/review/runtime/mcp.json", "--tools", "Read", "--allowedTools", "Read",
+                  "--add-dir", sysconfig.get_path("purelib"),
+                  "--settings", json.dumps({"disableRemoteControl": True}), "--", prompt,
+              ], env=env, capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          if token := env["ANTHROPIC_AUTH_TOKEN"]:
+              output = output.replace(token, "[redacted]")
+          print(output, end="")
+          result.check_returncode()
+          ' < "${TZREC_CLAUDE_SETTINGS_FILE:?Fleet must set the runner-local settings path}"
+      - name: Clean DSW review container
+        if: always()
+        run: docker rm -f "review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
+
   review:
     if: github.event.label.name == 'claude-review'
     runs-on: tzrec-codereview-runner
