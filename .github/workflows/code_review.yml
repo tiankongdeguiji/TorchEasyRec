@@ -159,11 +159,13 @@ jobs:
           [[ "$CI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           container="review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           runtime="$(readlink -e /opt/tzrec-ci/review/current)"
+          claude="$(readlink -e /opt/tzrec-ci/review/claude-home/.local/bin/claude)"
           docker run -d --pull=missing --network host --name "$container" \
             --label "tzrec-ci.node=${TZREC_CI_NODE:?}" --label "tzrec-ci.role=review-ci" \
             --cpus=2 --memory=8g --shm-size=1g --workdir /checkout \
             -v "$GITHUB_WORKSPACE/pr-code:/checkout" \
             -v "$GITHUB_WORKSPACE/trusted-claude/scripts/ci:/review/scripts:ro" \
+            -v "$claude:/review/claude:ro" \
             -v "$runtime:/review/runtime:ro" \
             "mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel@$CI_DIGEST" \
             sleep infinity
@@ -194,7 +196,7 @@ jobs:
           env["ANTHROPIC_BASE_URL"] = settings["ANTHROPIC_BASE_URL"]
           env.update(HTTP_PROXY="http://127.0.0.1:8119", HTTPS_PROXY="http://127.0.0.1:8119",
                      NO_PROXY="localhost,127.0.0.1", DISABLE_AUTOUPDATER="1")
-          cli = "/review/runtime/claude"
+          cli = "/review/claude"
           subprocess.run([cli, "--version"], check=True)
           prompt = ("Review the PR from .pr-review/diff and report findings in the response. "
                     "For each dependency version change, use .pr-review/env to find and read "
@@ -205,7 +207,7 @@ jobs:
                   cli, "--restricted", "-p", "--no-session-persistence",
                   "--output-format", "stream-json", "--verbose",
                   "--permission-mode", "manual", "--strict-mcp-config",
-                  "--mcp-config", sys.argv[1], "--tools", "Read", "--allowedTools", "Read",
+                  "--mcp-config", "/review/runtime/mcp.json", "--tools", "Read", "--allowedTools", "Read",
                   "--add-dir", sysconfig.get_path("purelib"),
                   "--settings", json.dumps({"disableRemoteControl": True}), "--", prompt,
               ], env=env, capture_output=True, text=True)
@@ -214,9 +216,7 @@ jobs:
               output = output.replace(token, "[redacted]")
           print(output, end="")
           result.check_returncode()
-          ' '{"mcpServers":{"github_inline_comment":{"command":"/review/runtime/bun",
-            "args":["/review/runtime/github-inline-comment-server.js"]}}}' \
-            < "${TZREC_CLAUDE_SETTINGS_FILE:?Fleet must set the runner-local settings path}"
+          ' < "${TZREC_CLAUDE_SETTINGS_FILE:?Fleet must set the runner-local settings path}"
       - name: Clean DSW review container
         if: always()
         run: docker rm -f "review-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
