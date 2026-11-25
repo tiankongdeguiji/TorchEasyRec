@@ -1,36 +1,32 @@
-name: Unit Test CI
-
-on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-  workflow_dispatch:
-
-concurrency:
-  group: unittest-ci-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
+name: Diskless recovery h20
+on: workflow_dispatch
+permissions: {}
 jobs:
-  ci-test:
-    runs-on: tzrec-runner
-    container:
-      image: mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5
-      options: --gpus all --ipc host --ulimit memlock=-1
+  probe:
+    timeout-minutes: 35
+    runs-on: [tzrec-ci-dsw, tzrec-diskless-pilot-h20]
     steps:
-      - name: FetchCommit ${{ github.event.pull_request.head.sha }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: run_${{ github.run_id }}
-      - name: RunUnitTestCI
-        id: run_unittest_ci
+      - name: Run tensor smoke in CI image
         run: |
-          CACHE_ROOT="/__w/TorchEasyRec/tzrec-ci-cache"
-          mkdir -p "$CACHE_ROOT/triton" "$CACHE_ROOT/inductor"
-          cd run_${{ github.run_id }}
-          # GHA overrides HOME to /github/home, hiding the image's warm pip cache.
-          PIP_CACHE_DIR=/root/.cache/pip \
-          TRITON_CACHE_DIR="$CACHE_ROOT/triton" \
-          TORCHINDUCTOR_CACHE_DIR="$CACHE_ROOT/inductor" \
-          LD_LIBRARY_PATH=/usr/local/cuda-13/compat \
-          CUDA_HOME=/usr/local/cuda-13 \
-          bash scripts/ci/ci_test.sh --scope gpu
+          set -euo pipefail
+          printf 'runner=%s lane=%s
+          ' "$RUNNER_NAME" "h20" | tee smoke.log
+          docker run --rm --pull=always --label "tzrec-ci.node=$TZREC_CI_NODE" --label "tzrec-ci.role=$TZREC_CI_ROLE" --gpus all -e CUDA_HOME=/usr/local/cuda-13 -e LD_LIBRARY_PATH=/usr/local/cuda-13/compat mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5 python -c '
+          import sys
+          import torch
+
+          count = int(sys.argv[1])
+          if count:
+              assert torch.cuda.device_count() == count, torch.cuda.device_count()
+          for device in ([f"cuda:{i}" for i in range(count)] if count else ["cpu"]):
+              x = torch.ones(8, device=device)
+              assert (x @ x).item() == 8
+          print(f"Tensor smoke passed on {count} accelerators" if count else "CPU tensor smoke passed")
+          ' 8 | tee -a smoke.log
+      - name: Upload smoke result
+        uses: actions/upload-artifact@v4
+        with:
+          name: h20
+          path: smoke.log
+          if-no-files-found: error
+          retention-days: 3

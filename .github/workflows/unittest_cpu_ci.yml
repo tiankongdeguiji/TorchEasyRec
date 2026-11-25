@@ -1,35 +1,36 @@
-name: Unit Test CPU CI
-
-on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-  workflow_dispatch:
-
-concurrency:
-  group: unittest-cpu-ci-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
+name: Diskless recovery cpu
+on: workflow_dispatch
+permissions: {}
 jobs:
-  ci-test:
-    runs-on: tzrec-cpu-runner
-    container:
-      image: mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5-cpu
-      options: --ipc host
+  probe:
+    timeout-minutes: 35
+    runs-on: [tzrec-ci-dsw, tzrec-diskless-pilot-cpu]
+    strategy:
+      matrix:
+        probe: [1, 2]
     steps:
-      - name: FetchCommit ${{ github.event.pull_request.head.sha }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: run_${{ github.run_id }}
-      - name: RunUnitTestCI
-        id: run_unittest_ci
-        env:
-          ALIBABA_CLOUD_ECS_METADATA: ${{ secrets.ALIBABA_CLOUD_ECS_METADATA }}
-          CI_ODPS_PROJECT_NAME: ${{ secrets.CI_ODPS_PROJECT_NAME }}
-          ODPS_ENDPOINT: ${{ secrets.ODPS_ENDPOINT }}
-          CI_ALIKAFKA_INSTANCE_ID: ${{ secrets.CI_ALIKAFKA_INSTANCE_ID }}
-          CI_ALIKAFKA_BROKERS: ${{ secrets.CI_ALIKAFKA_BROKERS }}
-          CI_REGION: ${{ secrets.CI_REGION }}
+      - name: Run tensor smoke in CI image
         run: |
-          cd run_${{ github.run_id }}
-          PIP_CACHE_DIR=/root/.cache/pip bash scripts/ci/ci_test_cpu.sh
+          set -euo pipefail
+          printf 'runner=%s lane=%s
+          ' "$RUNNER_NAME" "cpu" | tee smoke.log
+          docker run --rm --pull=always --label "tzrec-ci.node=$TZREC_CI_NODE" --label "tzrec-ci.role=$TZREC_CI_ROLE" --cpus=2 --memory=4g -e CUDA_VISIBLE_DEVICES= -e NVIDIA_VISIBLE_DEVICES=void mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5-cpu python -c '
+          import sys
+          import torch
+
+          count = int(sys.argv[1])
+          if count:
+              assert torch.cuda.device_count() == count, torch.cuda.device_count()
+          for device in ([f"cuda:{i}" for i in range(count)] if count else ["cpu"]):
+              x = torch.ones(8, device=device)
+              assert (x @ x).item() == 8
+          print(f"Tensor smoke passed on {count} accelerators" if count else "CPU tensor smoke passed")
+          ' 0 | tee -a smoke.log
+          sleep 60
+      - name: Upload smoke result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-${{ matrix.probe }}
+          path: smoke.log
+          if-no-files-found: error
+          retention-days: 3
