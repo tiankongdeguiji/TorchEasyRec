@@ -6,12 +6,12 @@ jobs:
     timeout-minutes: 35
     runs-on: [tzrec-ci-dsw, tzrec-diskless-pilot-h20]
     steps:
-      - name: Run tensor smoke in CI image
+      - name: Run tensor smoke on the DSW
         run: |
           set -euo pipefail
           printf 'runner=%s lane=%s
           ' "$RUNNER_NAME" "h20" | tee smoke.log
-          docker run --rm --pull=always --label "tzrec-ci.node=$TZREC_CI_NODE" --label "tzrec-ci.role=$TZREC_CI_ROLE" --gpus all -e CUDA_HOME=/usr/local/cuda-13 -e LD_LIBRARY_PATH=/usr/local/cuda-13/compat mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/tzrec-devel:1.5 python -c '
+          /opt/conda/bin/python -c '
           import sys
           import torch
 
