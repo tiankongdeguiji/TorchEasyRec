@@ -11,7 +11,7 @@ jobs:
           set -euo pipefail
           printf 'runner=%s lane=%s
           ' "$RUNNER_NAME" "h20" | tee smoke.log
-          /opt/conda/bin/python -c '
+          CUDA_HOME=/usr/local/cuda-13 LD_LIBRARY_PATH=/usr/local/cuda-13/compat /opt/conda/bin/python -c '
           import sys
           import torch
 
